@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from polymarket_autopilot.api import PolymarketClient
 from polymarket_autopilot.db import Database, MarketSnapshot, DEFAULT_DB_PATH
 from polymarket_autopilot.portfolio import PortfolioTracker
-from polymarket_autopilot.strategies import TailStrategy, get_strategy, signal_to_trade
+from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
 
 load_dotenv()
 
@@ -89,7 +89,8 @@ def init(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--strategy", default="TAIL", show_default=True, help="Strategy to evaluate.")
+@click.option("--strategy", default="TAIL", show_default=True,
+              help="Strategy to evaluate (or 'all' for all strategies).")
 @click.option("--max-pages", default=3, show_default=True, help="Max API pages to fetch.")
 @click.option("--record/--no-record", default=True, show_default=True,
               help="Record market snapshots to the database.")
@@ -97,15 +98,18 @@ def init(ctx: click.Context) -> None:
 def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> None:
     """Scan active markets and display trade signals (no trades executed)."""
     db = _get_db(ctx.obj["db_path"])
-    strat = get_strategy(strategy, db)
+
+    strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
+    strategies = [get_strategy(name, db) for name in strategy_names]
 
     async def _run() -> None:
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets (up to {max_pages} pages)…")
             markets = await client.get_all_active_markets(max_pages=max_pages)
             click.echo(f"Found {len(markets)} active markets.")
+            click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
-            signals = []
+            # Record snapshots first
             for market in markets:
                 if record and market.yes_price is not None:
                     db.record_snapshot(
@@ -118,19 +122,25 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
                             recorded_at=datetime.utcnow(),
                         )
                     )
-                signal = strat.evaluate(market)
-                if signal:
-                    signals.append(signal)
+
+            # Evaluate all strategies
+            signals = []
+            for strat in strategies:
+                for market in markets:
+                    signal = strat.evaluate(market)
+                    if signal:
+                        signals.append(signal)
 
             if not signals:
                 click.echo("No signals generated.")
                 return
 
             click.echo(f"\n{'='*70}")
-            click.echo(f"  {len(signals)} signal(s) from {strategy} strategy")
+            click.echo(f"  {len(signals)} signal(s) from {len(strategies)} strategy(ies)")
             click.echo(f"{'='*70}")
             for s in signals:
                 click.echo(
+                    f"\n  [{s.strategy}]"
                     f"\n  Market : {s.question[:65]}"
                     f"\n  Outcome: {s.outcome}  @ {s.entry_price:.3f}"
                     f"\n  Shares : {s.shares:.4f}  (cost ${s.shares * s.entry_price:.2f})"
@@ -148,20 +158,24 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
 
 
 @cli.command()
-@click.option("--strategy", default="TAIL", show_default=True, help="Strategy to run.")
+@click.option("--strategy", default="TAIL", show_default=True,
+              help="Strategy to run (or 'all' for all strategies).")
 @click.option("--max-pages", default=3, show_default=True, help="Max API pages to fetch.")
 @click.option("--dry-run", is_flag=True, help="Show what would be traded without executing.")
 @click.pass_context
 def trade(ctx: click.Context, strategy: str, max_pages: int, dry_run: bool) -> None:
     """Run a full scan-and-trade cycle: record snapshots, open/close positions."""
     db = _get_db(ctx.obj["db_path"])
-    strat = get_strategy(strategy, db)
+
+    strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
+    strategies = [get_strategy(name, db) for name in strategy_names]
 
     async def _run() -> None:
         async with PolymarketClient() as client:
-            click.echo(f"[{strategy}] Fetching markets…")
+            click.echo(f"Fetching markets…")
             markets = await client.get_all_active_markets(max_pages=max_pages)
-            click.echo(f"[{strategy}] {len(markets)} active markets fetched.")
+            click.echo(f"{len(markets)} active markets fetched.")
+            click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
             market_map = {m.condition_id: m for m in markets}
 
@@ -179,47 +193,49 @@ def trade(ctx: click.Context, strategy: str, max_pages: int, dry_run: bool) -> N
                         )
                     )
 
-            # --- process exit signals ---
-            exit_signals = strat.check_exits(market_map)
-            for sig in exit_signals:
-                if dry_run:
-                    click.echo(
-                        f"[DRY-RUN] Would close trade #{sig.trade_id} "
-                        f"@ {sig.exit_price:.3f} ({sig.reason})"
-                    )
-                else:
-                    closed = db.close_trade(sig.trade_id, sig.exit_price, sig.status)
-                    if closed:
-                        pnl_str = f"+${closed.pnl:.2f}" if (closed.pnl or 0) >= 0 else f"-${abs(closed.pnl or 0):.2f}"
+            # --- process exit signals for all strategies ---
+            for strat in strategies:
+                exit_signals = strat.check_exits(market_map)
+                for sig in exit_signals:
+                    if dry_run:
                         click.echo(
-                            f"[CLOSED] #{sig.trade_id} {sig.reason}  PnL: {pnl_str}"
+                            f"[DRY-RUN] [{strat.name}] Would close trade #{sig.trade_id} "
+                            f"@ {sig.exit_price:.3f} ({sig.reason})"
                         )
+                    else:
+                        closed = db.close_trade(sig.trade_id, sig.exit_price, sig.status)
+                        if closed:
+                            pnl_str = f"+${closed.pnl:.2f}" if (closed.pnl or 0) >= 0 else f"-${abs(closed.pnl or 0):.2f}"
+                            click.echo(
+                                f"[CLOSED] [{strat.name}] #{sig.trade_id} {sig.reason}  PnL: {pnl_str}"
+                            )
 
-            # --- process entry signals ---
+            # --- process entry signals for all strategies ---
             entry_count = 0
-            for market in markets:
-                signal = strat.evaluate(market)
-                if signal is None:
-                    continue
-                trade_obj = signal_to_trade(signal)
-                cost = trade_obj.shares * trade_obj.entry_price
+            for strat in strategies:
+                for market in markets:
+                    signal = strat.evaluate(market)
+                    if signal is None:
+                        continue
+                    trade_obj = signal_to_trade(signal)
+                    cost = trade_obj.shares * trade_obj.entry_price
 
-                if dry_run:
-                    click.echo(
-                        f"[DRY-RUN] Would open {signal.outcome} on "
-                        f"'{signal.question[:50]}' @ {signal.entry_price:.3f} "
-                        f"(${cost:.2f})"
-                    )
-                else:
-                    trade_id = db.open_trade(trade_obj)
-                    click.echo(
-                        f"[OPENED] #{trade_id} {signal.outcome} "
-                        f"'{signal.question[:50]}' @ {signal.entry_price:.3f} "
-                        f"(${cost:.2f})  TP:{signal.take_profit:.3f}  SL:{signal.stop_loss:.3f}"
-                    )
-                entry_count += 1
+                    if dry_run:
+                        click.echo(
+                            f"[DRY-RUN] [{strat.name}] Would open {signal.outcome} on "
+                            f"'{signal.question[:50]}' @ {signal.entry_price:.3f} "
+                            f"(${cost:.2f})"
+                        )
+                    else:
+                        trade_id = db.open_trade(trade_obj)
+                        click.echo(
+                            f"[OPENED] [{strat.name}] #{trade_id} {signal.outcome} "
+                            f"'{signal.question[:50]}' @ {signal.entry_price:.3f} "
+                            f"(${cost:.2f})  TP:{signal.take_profit:.3f}  SL:{signal.stop_loss:.3f}"
+                        )
+                    entry_count += 1
 
-            if entry_count == 0 and not exit_signals:
+            if entry_count == 0:
                 click.echo("No trades executed this cycle.")
 
     asyncio.run(_run())
