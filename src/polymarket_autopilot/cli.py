@@ -24,7 +24,7 @@ from polymarket_autopilot.api import PolymarketClient
 from polymarket_autopilot.db import Database, MarketSnapshot, DEFAULT_DB_PATH
 from polymarket_autopilot.portfolio import PortfolioTracker
 from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
-from polymarket_autopilot.backtest import Backtester
+from polymarket_autopilot.backtest import Backtester, format_backtest_result
 from polymarket_autopilot.report_generator import generate_daily_report
 
 load_dotenv()
@@ -356,9 +356,9 @@ def history(ctx: click.Context, limit: int, offset: int) -> None:
 def backtest(ctx: click.Context, strategy: str, days: int, capital: float) -> None:
     """Replay a strategy against historical snapshots and report metrics."""
     db = _get_db(ctx.obj["db_path"])
-    bt = Backtester(db, strategy_name=strategy, days=days, starting_capital=capital)
-    result = bt.run()
-    result.print_summary()
+    bt = Backtester(db, strategy_name=strategy, starting_capital=capital)
+    result = bt.run(days=days)
+    click.echo(format_backtest_result(result))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,10 @@
+=== Auto-trade cycle: Fri Mar  6 18:15:00 EST 2026 ===
+Fetching markets…
+500 active markets fetched.
+Running 10 strategy(ies): TAIL, MARKET_MAKER, AI_PROBABILITY, CORRELATION, MEAN_REVERSION, MOMENTUM, VOLATILITY, WHALE_FOLLOW, NEWS_MOMENTUM, CONTRARIAN
+[CLOSED] [MOMENTUM] #2 Stop-loss hit (0.480 <= 0.513)  PnL: -$55.91
+[CLOSED] [MOMENTUM] #4 Stop-loss hit (0.077 <= 0.123)  PnL: -$170.15
+[CLOSED] [MOMENTUM] #14 Stop-loss hit (0.007 <= 0.010)  PnL: -$114.29
+[OPENED] [TAIL] #26 YES 'Will Shai Gilgeous-Alexander win the 2025–2026 NBA' @ 0.750 ($482.98)  TP:0.863  SL:0.675
+[OPENED] [TAIL] #27 YES 'Will Arsenal win the 2025–26 English Premier Leagu' @ 0.815 ($376.67)  TP:0.937  SL:0.734
+=== Completed: Fri Mar  6 18:15:15 EST 2026 ===
