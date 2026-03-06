@@ -142,24 +142,34 @@ class PolymarketClient:
         limit: int = 100,
         next_cursor: str | None = None,
     ) -> tuple[list[Market], str | None]:
-        """Fetch a page of markets from the CLOB API.
+        """Fetch a page of markets from the Gamma API (better filtering).
 
         Args:
             active: If True, only return active (open) markets.
             limit: Page size (max 100).
-            next_cursor: Pagination cursor from a prior response.
+            next_cursor: Pagination cursor (used as offset for Gamma API).
 
         Returns:
             A tuple of (markets, next_cursor). next_cursor is None when
             there are no more pages.
         """
-        params: dict[str, Any] = {"next_cursor": next_cursor or "MA=="}
-        data = await self._get(CLOB_BASE_URL, "/markets", params=params)
+        params: dict[str, Any] = {"limit": limit}
+        if active:
+            params["active"] = "true"
+            params["closed"] = "false"
+        if next_cursor:
+            params["offset"] = next_cursor
 
-        raw_markets: list[dict[str, Any]] = data.get("data", [])
-        cursor: str | None = data.get("next_cursor")
-        if cursor in ("", "LTE="):
-            cursor = None
+        data = await self._get(GAMMA_BASE_URL, "/markets", params=params)
+
+        # Gamma returns a flat list
+        raw_markets: list[dict[str, Any]] = data if isinstance(data, list) else data.get("data", [])
+
+        # Calculate next cursor (offset-based pagination)
+        cursor: str | None = None
+        if len(raw_markets) >= limit:
+            current_offset = int(next_cursor) if next_cursor else 0
+            cursor = str(current_offset + limit)
 
         markets: list[Market] = []
         for raw in raw_markets:
@@ -167,8 +177,6 @@ class PolymarketClient:
             if active and (market.closed or not market.active):
                 continue
             markets.append(market)
-            if len(markets) >= limit:
-                break
 
         return markets, cursor
 
@@ -243,16 +251,37 @@ def _parse_market(raw: dict[str, Any]) -> Market:
     Returns:
         Populated Market instance.
     """
-    tokens: list[dict[str, Any]] = raw.get("tokens", [])
+    # Parse outcomes — handle both CLOB (tokens list) and Gamma (outcomes + outcomePrices) formats
     outcomes: list[Outcome] = []
-    for token in tokens:
-        outcomes.append(
-            Outcome(
-                name=token.get("outcome", ""),
-                price=float(token.get("price", 0.0)),
-                token_id=token.get("token_id", ""),
+    tokens: list[dict[str, Any]] = raw.get("tokens", [])
+    if tokens:
+        # CLOB API format
+        for token in tokens:
+            outcomes.append(
+                Outcome(
+                    name=token.get("outcome", ""),
+                    price=float(token.get("price", 0.0)),
+                    token_id=token.get("token_id", ""),
+                )
             )
-        )
+    else:
+        # Gamma API format: separate outcomes and outcomePrices arrays
+        outcome_names = raw.get("outcomes", [])
+        outcome_prices = raw.get("outcomePrices", [])
+        clob_token_ids = raw.get("clobTokenIds", [])
+        if isinstance(outcome_names, str):
+            import json
+            outcome_names = json.loads(outcome_names)
+        if isinstance(outcome_prices, str):
+            import json
+            outcome_prices = json.loads(outcome_prices)
+        if isinstance(clob_token_ids, str):
+            import json
+            clob_token_ids = json.loads(clob_token_ids)
+        for i, name in enumerate(outcome_names):
+            price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
+            token_id = clob_token_ids[i] if i < len(clob_token_ids) else ""
+            outcomes.append(Outcome(name=name, price=price, token_id=token_id))
 
     end_date: datetime | None = None
     raw_end = raw.get("end_date_iso") or raw.get("endDateIso") or raw.get("end_date")
