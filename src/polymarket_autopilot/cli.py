@@ -24,6 +24,8 @@ from polymarket_autopilot.api import PolymarketClient
 from polymarket_autopilot.db import Database, MarketSnapshot, DEFAULT_DB_PATH
 from polymarket_autopilot.portfolio import PortfolioTracker
 from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
+from polymarket_autopilot.backtest import Backtester
+from polymarket_autopilot.report_generator import generate_daily_report
 
 load_dotenv()
 
@@ -322,3 +324,52 @@ def history(ctx: click.Context, limit: int, offset: int) -> None:
             f"{exit_str:>6}  {pnl_str:>8}  {t.question[:35]}"
         )
     click.echo(f"{'='*80}\n")
+
+
+# ---------------------------------------------------------------------------
+# backtest
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option(
+    "--strategy",
+    default="TAIL",
+    show_default=True,
+    help="Strategy name to backtest (e.g. TAIL, MOMENTUM).",
+)
+@click.option(
+    "--days",
+    default=7,
+    show_default=True,
+    type=int,
+    help="Number of past days of snapshot history to replay.",
+)
+@click.option(
+    "--capital",
+    default=10_000.0,
+    show_default=True,
+    type=float,
+    help="Starting capital for the simulation.",
+)
+@click.pass_context
+def backtest(ctx: click.Context, strategy: str, days: int, capital: float) -> None:
+    """Replay a strategy against historical snapshots and report metrics."""
+    db = _get_db(ctx.obj["db_path"])
+    bt = Backtester(db, strategy_name=strategy, days=days, starting_capital=capital)
+    result = bt.run()
+    result.print_summary()
+
+
+# ---------------------------------------------------------------------------
+# daily-report
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="daily-report")
+@click.pass_context
+def daily_report(ctx: click.Context) -> None:
+    """Print a Markdown daily report (portfolio, trades, strategy breakdown)."""
+    db = _get_db(ctx.obj["db_path"])
+    report = generate_daily_report(db)
+    click.echo(report)
