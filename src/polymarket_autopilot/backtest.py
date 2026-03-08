@@ -1,8 +1,11 @@
 """Backtesting engine for polymarket-autopilot.
 
 Replays trading strategies against historical market snapshots stored in
-the SQLite database. Produces performance metrics including return,
-win rate, max drawdown, and Sharpe ratio.
+the SQLite database. Uses the actual strategy classes (not simplified logic)
+so backtest results reflect real strategy behaviour.
+
+Produces performance metrics including return, win rate, max drawdown,
+and Sharpe ratio.
 """
 
 from __future__ import annotations
@@ -10,15 +13,22 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from polymarket_autopilot.api import Market, Outcome
-from polymarket_autopilot.db import Database, MarketSnapshot
+from polymarket_autopilot.db import (
+    Database,
+    MarketSnapshot,
+    PaperTrade,
+    STARTING_CAPITAL,
+)
 from polymarket_autopilot.strategies import (
     STRATEGIES,
     Strategy,
     TradeSignal,
+    ExitSignal,
     get_strategy,
+    signal_to_trade,
     _price_for_outcome,
 )
 
@@ -66,6 +76,111 @@ class BacktestResult:
 
 
 # ---------------------------------------------------------------------------
+# In-memory portfolio for backtest isolation
+# ---------------------------------------------------------------------------
+
+
+class _BacktestPortfolio:
+    """Lightweight in-memory portfolio that mimics the Database interface
+    required by Strategy classes, without touching the real database.
+
+    This ensures backtests are fully isolated from live paper trading.
+    """
+
+    def __init__(self, starting_capital: float = 10_000.0) -> None:
+        self.cash = starting_capital
+        self.starting_capital = starting_capital
+        self._open_trades: dict[str, BacktestTrade] = {}  # condition_id -> trade
+        self._snapshots: dict[str, list[MarketSnapshot]] = {}  # condition_id -> snapshots
+
+    # --- Methods that Strategy classes call via self.db ---
+
+    def get_cash(self) -> float:
+        return self.cash
+
+    def get_portfolio_value(self) -> float:
+        open_cost = sum(t.shares * t.entry_price for t in self._open_trades.values())
+        return self.cash + open_cost
+
+    def get_trade_by_condition(self, condition_id: str) -> PaperTrade | None:
+        """Return a fake PaperTrade if we have an open position."""
+        bt = self._open_trades.get(condition_id)
+        if bt is None:
+            return None
+        # Return a minimal PaperTrade so strategies see an open position
+        return PaperTrade(
+            id=0,
+            condition_id=bt.condition_id,
+            question=bt.question,
+            outcome=bt.outcome,
+            strategy=bt.strategy,
+            shares=bt.shares,
+            entry_price=bt.entry_price,
+            exit_price=None,
+            take_profit=bt.entry_price * 1.15,
+            stop_loss=bt.entry_price * 0.90,
+            status="open",
+            pnl=None,
+            opened_at=datetime.now(timezone.utc),
+            closed_at=None,
+        )
+
+    def get_open_trades(self) -> list[PaperTrade]:
+        """Return all open positions as PaperTrade objects."""
+        result: list[PaperTrade] = []
+        for bt in self._open_trades.values():
+            pt = self.get_trade_by_condition(bt.condition_id)
+            if pt is not None:
+                result.append(pt)
+        return result
+
+    def get_recent_snapshots(
+        self, condition_id: str, n: int = 10
+    ) -> list[MarketSnapshot]:
+        """Return the N most recent snapshots for a market (chronological)."""
+        snaps = self._snapshots.get(condition_id, [])
+        return snaps[-n:]
+
+    # --- Backtest-specific methods ---
+
+    def record_snapshot(self, snapshot: MarketSnapshot) -> None:
+        """Append a snapshot to the in-memory history."""
+        self._snapshots.setdefault(snapshot.condition_id, []).append(snapshot)
+
+    def open_position(self, signal: TradeSignal) -> BacktestTrade:
+        """Open a position from a trade signal."""
+        cost = signal.shares * signal.entry_price
+        self.cash -= cost
+        trade = BacktestTrade(
+            condition_id=signal.condition_id,
+            question=signal.question,
+            outcome=signal.outcome,
+            strategy=signal.strategy,
+            entry_price=signal.entry_price,
+            shares=signal.shares,
+        )
+        self._open_trades[signal.condition_id] = trade
+        return trade
+
+    def close_position(
+        self, condition_id: str, exit_price: float, status: str
+    ) -> BacktestTrade | None:
+        """Close a position and return it."""
+        trade = self._open_trades.pop(condition_id, None)
+        if trade is None:
+            return None
+        trade.exit_price = exit_price
+        trade.pnl = (exit_price - trade.entry_price) * trade.shares
+        trade.status = status
+        self.cash += trade.shares * exit_price
+        return trade
+
+    @property
+    def open_positions(self) -> dict[str, BacktestTrade]:
+        return self._open_trades
+
+
+# ---------------------------------------------------------------------------
 # Backtester
 # ---------------------------------------------------------------------------
 
@@ -73,9 +188,12 @@ class BacktestResult:
 class Backtester:
     """Replay a strategy against historical snapshot data.
 
+    Uses the actual strategy classes with an in-memory portfolio so
+    backtest results reflect real strategy behaviour.
+
     Args:
         db: Database with historical snapshots.
-        strategy_name: Name of the strategy to test.
+        strategy_name: Name of the strategy to test (or 'all').
         starting_capital: Initial paper capital.
     """
 
@@ -98,7 +216,7 @@ class Backtester:
         Returns:
             BacktestResult with performance metrics.
         """
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
 
         # Get all snapshots in the period, grouped by timestamp
@@ -106,90 +224,89 @@ class Backtester:
         if not snapshots:
             return self._empty_result(start_date, end_date)
 
-        # Group snapshots by approximate timestamp (within 60 seconds)
+        # Group snapshots by approximate timestamp (within 120 seconds)
         batches = self._group_by_timestamp(snapshots)
 
-        cash = self.starting_capital
-        positions: dict[str, BacktestTrade] = {}  # condition_id -> trade
+        # Create isolated in-memory portfolio
+        portfolio = _BacktestPortfolio(self.starting_capital)
+
+        # Instantiate real strategy classes with the backtest portfolio as "db"
+        strategy_names = (
+            list(STRATEGIES.keys())
+            if self.strategy_name.upper() == "ALL"
+            else [self.strategy_name]
+        )
+        strategies: list[Strategy] = []
+        for name in strategy_names:
+            strategies.append(get_strategy(name, portfolio))  # type: ignore[arg-type]
+
         closed_trades: list[BacktestTrade] = []
         portfolio_values: list[float] = [self.starting_capital]
 
         for batch in batches:
-            # Build market objects from snapshots
+            # Record snapshots to in-memory history
+            for snap in batch:
+                portfolio.record_snapshot(snap)
+
+            # Build market objects from this batch
             markets = self._snapshots_to_markets(batch)
+            market_map = {m.condition_id: m for m in markets.values()}
 
-            # Check exits on existing positions
-            for cid, trade in list(positions.items()):
-                if cid not in markets:
-                    continue
-                market = markets[cid]
-                current_price = self._get_price(market, trade.outcome)
-                if current_price is None:
-                    continue
+            # --- Check exits using real strategy logic ---
+            for strat in strategies:
+                exit_signals = strat.check_exits(market_map)
+                for sig in exit_signals:
+                    # Find the condition_id for this trade
+                    for cid, bt in list(portfolio.open_positions.items()):
+                        pt = portfolio.get_trade_by_condition(cid)
+                        if pt is not None and pt.id == sig.trade_id:
+                            closed = portfolio.close_position(
+                                cid, sig.exit_price, sig.status
+                            )
+                            if closed:
+                                closed_trades.append(closed)
+                            break
 
-                if current_price >= trade.entry_price * 1.15:  # TP
-                    trade.exit_price = current_price
-                    trade.pnl = (current_price - trade.entry_price) * trade.shares
-                    trade.status = "closed_tp"
-                    cash += trade.shares * current_price
-                    closed_trades.append(trade)
-                    del positions[cid]
-                elif current_price <= trade.entry_price * 0.90:  # SL
-                    trade.exit_price = current_price
-                    trade.pnl = (current_price - trade.entry_price) * trade.shares
-                    trade.status = "closed_sl"
-                    cash += trade.shares * current_price
-                    closed_trades.append(trade)
-                    del positions[cid]
-
-            # Evaluate new signals (simplified — use price threshold only)
-            for cid, market in markets.items():
-                if cid in positions:
-                    continue
-                yes_price = market.yes_price
-                if yes_price is None or yes_price < 0.6:
-                    continue
-
-                # Simple position sizing: max 5% of portfolio
-                portfolio_val = cash + sum(
-                    p.shares * p.entry_price for p in positions.values()
-                )
-                max_spend = min(portfolio_val * 0.05, cash)
-                if max_spend < yes_price:
-                    continue
-
-                shares = max_spend / yes_price
-                trade = BacktestTrade(
-                    condition_id=cid,
-                    question=market.question,
-                    outcome="YES",
-                    strategy=self.strategy_name,
-                    entry_price=yes_price,
-                    shares=shares,
-                )
-                positions[cid] = trade
-                cash -= max_spend
+            # --- Check entries using real strategy logic ---
+            for strat in strategies:
+                for market in markets.values():
+                    signal = strat.evaluate(market)
+                    if signal is None:
+                        continue
+                    # Verify we have enough cash
+                    cost = signal.shares * signal.entry_price
+                    if cost > portfolio.cash or cost <= 0:
+                        continue
+                    portfolio.open_position(signal)
 
             # Track portfolio value
-            open_value = sum(
-                t.shares * t.entry_price for t in positions.values()
-            )
-            portfolio_values.append(cash + open_value)
+            portfolio_values.append(portfolio.get_portfolio_value())
 
-        # Calculate metrics
-        all_trades = closed_trades + list(positions.values())
-        winning = [t for t in closed_trades if t.pnl > 0]
-        losing = [t for t in closed_trades if t.pnl <= 0]
+        # --- Calculate metrics ---
+        all_closed = closed_trades
+        still_open = list(portfolio.open_positions.values())
+        all_trades = all_closed + still_open
+
+        winning = [t for t in all_closed if t.pnl > 0]
+        losing = [t for t in all_closed if t.pnl <= 0]
 
         ending_capital = portfolio_values[-1] if portfolio_values else self.starting_capital
-        total_return = ((ending_capital - self.starting_capital) / self.starting_capital) * 100
+        total_return = (
+            (ending_capital - self.starting_capital) / self.starting_capital * 100
+        )
 
-        win_rate = len(winning) / len(closed_trades) if closed_trades else 0.0
+        win_rate = len(winning) / len(all_closed) if all_closed else 0.0
         max_dd = self._max_drawdown(portfolio_values)
         sharpe = self._sharpe_ratio(portfolio_values)
 
+        display_name = (
+            self.strategy_name
+            if self.strategy_name.upper() != "ALL"
+            else "ALL STRATEGIES"
+        )
+
         return BacktestResult(
-            strategy_name=self.strategy_name,
+            strategy_name=display_name,
             period_start=start_date,
             period_end=end_date,
             starting_capital=self.starting_capital,
@@ -201,7 +318,7 @@ class Backtester:
             total_trades=len(all_trades),
             winning_trades=len(winning),
             losing_trades=len(losing),
-            open_trades=len(positions),
+            open_trades=len(still_open),
             trades=all_trades,
         )
 
@@ -234,7 +351,11 @@ class Backtester:
                     yes_price=row[2],
                     no_price=row[3],
                     volume=row[4],
-                    recorded_at=datetime.fromisoformat(row[5]) if row[5] else datetime.utcnow(),
+                    recorded_at=(
+                        datetime.fromisoformat(row[5])
+                        if row[5]
+                        else datetime.now(timezone.utc)
+                    ),
                 )
             )
         return snapshots
@@ -281,13 +402,6 @@ class Backtester:
                 closed=False,
             )
         return markets
-
-    def _get_price(self, market: Market, outcome: str) -> float | None:
-        """Get price for an outcome."""
-        for o in market.outcomes:
-            if o.name.upper() == outcome.upper():
-                return o.price
-        return None
 
     def _max_drawdown(self, values: list[float]) -> float:
         """Calculate maximum drawdown percentage."""

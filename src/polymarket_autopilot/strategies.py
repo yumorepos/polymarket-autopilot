@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from polymarket_autopilot.api import Market
 from polymarket_autopilot.db import Database, MarketSnapshot, PaperTrade
@@ -748,7 +748,7 @@ class VolatilityStrategy(Strategy):
             return None
 
         # Check proximity to resolution
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         days_left = (market.end_date - now).total_seconds() / 86400
         if days_left < 0 or days_left > self.days_to_expiry:
             return None
@@ -1123,6 +1123,6 @@ def signal_to_trade(signal: TradeSignal) -> PaperTrade:
         stop_loss=signal.stop_loss,
         status="open",
         pnl=None,
-        opened_at=datetime.utcnow(),
+        opened_at=datetime.now(timezone.utc),
         closed_at=None,
     )

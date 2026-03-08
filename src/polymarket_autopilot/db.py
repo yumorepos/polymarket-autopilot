@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
@@ -402,7 +402,7 @@ def _ensure_portfolio_row(conn: sqlite3.Connection) -> None:
 
 
 def _now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _fmt(dt: datetime) -> str:
@@ -432,7 +432,7 @@ def _row_to_trade(row: sqlite3.Row) -> PaperTrade:
         stop_loss=float(row["stop_loss"]),
         status=row["status"],
         pnl=float(row["pnl"]) if row["pnl"] is not None else None,
-        opened_at=_parse_dt(row["opened_at"]) or datetime.utcnow(),
+        opened_at=_parse_dt(row["opened_at"]) or datetime.now(timezone.utc),
         closed_at=_parse_dt(row["closed_at"]),
     )
 
@@ -444,5 +444,5 @@ def _row_to_snapshot(row: sqlite3.Row) -> MarketSnapshot:
         yes_price=float(row["yes_price"]),
         no_price=float(row["no_price"]),
         volume=float(row["volume"]),
-        recorded_at=_parse_dt(row["recorded_at"]) or datetime.utcnow(),
+        recorded_at=_parse_dt(row["recorded_at"]) or datetime.now(timezone.utc),
     )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -121,7 +121,7 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
                             yes_price=market.yes_price or 0.0,
                             no_price=market.no_price or 0.0,
                             volume=market.volume,
-                            recorded_at=datetime.utcnow(),
+                            recorded_at=datetime.now(timezone.utc),
                         )
                     )
 
@@ -191,7 +191,7 @@ def trade(ctx: click.Context, strategy: str, max_pages: int, dry_run: bool) -> N
                             yes_price=market.yes_price or 0.0,
                             no_price=market.no_price or 0.0,
                             volume=market.volume,
-                            recorded_at=datetime.utcnow(),
+                            recorded_at=datetime.now(timezone.utc),
                         )
                     )
 
