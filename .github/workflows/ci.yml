@@ -21,32 +21,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
-          pip install -r requirements.txt 2>/dev/null || true
-          pip install -r requirements-dev.txt 2>/dev/null || true
-          pip install pytest pytest-asyncio
+          pip install -e ".[dev]"
 
-      - name: Run linter (ruff)
-        run: |
-          pip install ruff
-          ruff check . --exit-zero
+      - name: Lint with ruff
+        run: ruff check src/ tests/
 
-      - name: Run type checker (mypy)
-        run: |
-          pip install mypy
-          mypy . --ignore-missing-imports --exit-zero || true
+      - name: Format check with ruff
+        run: ruff format --check src/ tests/
+
+      - name: Type check with mypy
+        run: mypy src/
 
       - name: Run tests
-        run: |
-          pytest -v --tb=short
+        run: pytest -v

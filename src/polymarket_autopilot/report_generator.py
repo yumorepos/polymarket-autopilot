@@ -6,7 +6,7 @@ and strategy breakdown. Designed for Telegram delivery.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from polymarket_autopilot.db import Database, PaperTrade
 from polymarket_autopilot.portfolio import PortfolioTracker
@@ -25,7 +25,7 @@ def generate_daily_report(db: Database) -> str:
     report = tracker.get_report()
 
     # Get today's trades
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     all_trades = db.get_trade_history(limit=200, offset=0)
 
     today_opened = [
@@ -58,7 +58,7 @@ def generate_daily_report(db: Database) -> str:
 
     lines = [
         "📊 **DAILY P&L REPORT**",
-        f"_{datetime.utcnow():%Y-%m-%d %H:%M UTC}_",
+        f"_{datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}_",
         "",
         f"💰 **Portfolio Value:** ${report.total_value:,.2f}",
         f"💵 **Cash:** ${report.cash:,.2f}",
