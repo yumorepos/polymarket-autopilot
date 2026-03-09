@@ -413,7 +413,11 @@ def _parse_dt(s: str | None) -> datetime | None:
     if s is None:
         return None
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
+        # If naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
