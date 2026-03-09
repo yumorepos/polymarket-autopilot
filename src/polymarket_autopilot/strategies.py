@@ -1126,3 +1126,11 @@ def signal_to_trade(signal: TradeSignal) -> PaperTrade:
         opened_at=datetime.now(timezone.utc),
         closed_at=None,
     )
+
+class SIMPLE_MEAN_REVERSAL(Strategy):
+    name = "SIMPLE_MEAN_REVERSAL"
+    def evaluate(self, market) -> TradeSignal | None:
+        # A simple placeholder that does not trade, representing mean-reversion core logic template.
+        return None
+
+STRATEGIES["SIMPLE_MEAN_REVERSAL"] = SIMPLE_MEAN_REVERSAL
