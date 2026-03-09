@@ -249,22 +249,31 @@ class Strategy(ABC):
 
 
 class TailStrategy(Strategy):
-    """Trend-Following Adaptive Indicator Logic (TAIL) strategy.
+    """True Tail Risk strategy — buy long-shot bets (low probability events).
 
     Entry conditions (all must be true):
-    1. YES probability > ``min_yes_prob`` (default 60 %)
-    2. Current volume > rolling average volume of last ``lookback`` snapshots
-    3. Current YES price > average YES price of last ``lookback`` snapshots
-    4. No existing open position in this market
+    1. YES probability < ``max_yes_prob`` (default 20 %) — buy LONG-SHOTS only
+    2. YES probability > ``min_yes_prob`` (default 5 %) — avoid extremely unlikely events
+    3. Current volume > rolling average volume (indicates liquidity for exit)
+    4. Price showing positive momentum (trending up from average)
+    5. No existing open position in this market
 
     Position sizing:
-    - Max ``max_position_pct`` (default 5 %) of total portfolio value per trade
-    - Take-profit: entry + ``tp_pct`` (default +15 %)
-    - Stop-loss:   entry - ``sl_pct`` (default -10 %)
+    - Max ``max_position_pct`` (default 2 %) of total portfolio value per trade
+      (smaller positions appropriate for high-risk long-shot bets)
+    - Take-profit: entry + ``tp_pct`` (default +100 %) — wide targets for tail events
+    - Stop-loss:   entry - ``sl_pct`` (default -50 %) — wider stops for volatility
+
+    Rationale:
+    - True tail strategies profit from rare high-payoff events
+    - Entry at low prices (5-20%) allows for asymmetric upside
+    - Smaller position sizing limits downside from frequent small losses
+    - Wider TP/SL bands accommodate the volatility of long-shot bets
 
     Args:
         db: Database instance.
-        min_yes_prob: Minimum YES probability to consider entry (0–1).
+        max_yes_prob: Maximum YES probability to consider entry (0–1).
+        min_yes_prob: Minimum YES probability to avoid noise (0–1).
         max_position_pct: Max fraction of portfolio per trade (0–1).
         tp_pct: Take-profit as a fraction above entry.
         sl_pct: Stop-loss as a fraction below entry.
@@ -276,13 +285,15 @@ class TailStrategy(Strategy):
     def __init__(
         self,
         db: Database,
-        min_yes_prob: float = 0.60,
-        max_position_pct: float = 0.05,
-        tp_pct: float = 0.15,
-        sl_pct: float = 0.10,
+        max_yes_prob: float = 0.20,      # Changed: now a MAXIMUM (buy long-shots)
+        min_yes_prob: float = 0.05,      # Added: avoid extremely unlikely events
+        max_position_pct: float = 0.02,  # Reduced from 0.05 to 0.02 (2% vs 5%)
+        tp_pct: float = 1.00,            # Increased from 0.15 to 1.00 (100% gain target)
+        sl_pct: float = 0.50,            # Increased from 0.10 to 0.50 (50% loss max)
         lookback: int = 5,
     ) -> None:
         super().__init__(db)
+        self.max_yes_prob = max_yes_prob
         self.min_yes_prob = min_yes_prob
         self.max_position_pct = max_position_pct
         self.tp_pct = tp_pct
@@ -302,17 +313,27 @@ class TailStrategy(Strategy):
         if yes_price is None:
             return None
 
-        # Condition 1: probability threshold
+        # Condition 1: Buy LONG-SHOTS only (low probability events)
+        if yes_price > self.max_yes_prob:
+            logger.debug(
+                "TAIL skip %s: YES=%.3f > max %.3f (not a long-shot)",
+                market.condition_id[:8],
+                yes_price,
+                self.max_yes_prob,
+            )
+            return None
+
+        # Condition 2: Avoid extremely unlikely events (noise filter)
         if yes_price < self.min_yes_prob:
             logger.debug(
-                "TAIL skip %s: YES=%.3f < min %.3f",
+                "TAIL skip %s: YES=%.3f < min %.3f (too unlikely)",
                 market.condition_id[:8],
                 yes_price,
                 self.min_yes_prob,
             )
             return None
 
-        # Condition 4: no existing open position
+        # Condition 3: No existing open position
         existing = self.db.get_trade_by_condition(market.condition_id)
         if existing is not None:
             logger.debug("TAIL skip %s: position already open", market.condition_id[:8])
@@ -321,7 +342,7 @@ class TailStrategy(Strategy):
         # Retrieve recent snapshots for trend analysis
         snapshots = self.db.get_recent_snapshots(market.condition_id, self.lookback)
 
-        # Condition 2: volume above average (requires at least 2 snapshots)
+        # Condition 4: Volume above average (liquidity check, requires at least 2 snapshots)
         if len(snapshots) >= 2:
             avg_volume = sum(s.volume for s in snapshots) / len(snapshots)
             if market.volume < avg_volume:
@@ -333,19 +354,19 @@ class TailStrategy(Strategy):
                 )
                 return None
 
-        # Condition 3: price trending up (requires at least 2 snapshots)
+        # Condition 5: Price showing positive momentum (trending up from average)
         if len(snapshots) >= 2:
             avg_price = sum(s.yes_price for s in snapshots) / len(snapshots)
             if yes_price <= avg_price:
                 logger.debug(
-                    "TAIL skip %s: price %.3f <= avg %.3f",
+                    "TAIL skip %s: price %.3f <= avg %.3f (no momentum)",
                     market.condition_id[:8],
                     yes_price,
                     avg_price,
                 )
                 return None
 
-        # Position sizing
+        # Position sizing — smaller positions for high-risk long-shot bets
         portfolio_value = self.db.get_portfolio_value()
         cash = self.db.get_cash()
         max_spend = min(portfolio_value * self.max_position_pct, cash)
@@ -358,8 +379,8 @@ class TailStrategy(Strategy):
         stop_loss = _calc_sl(yes_price, self.sl_pct)
 
         reason = (
-            f"YES={yes_price:.3f} > {self.min_yes_prob:.0%} threshold; "
-            f"volume/trend conditions met"
+            f"Long-shot bet: YES={yes_price:.3f} (in range {self.min_yes_prob:.0%}-{self.max_yes_prob:.0%}); "
+            f"volume/momentum conditions met"
         )
         if len(snapshots) < 2:
             reason += " (volume/trend skipped — insufficient history)"
