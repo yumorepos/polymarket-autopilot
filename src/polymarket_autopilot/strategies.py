@@ -31,14 +31,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Maximum / minimum valid prices on prediction markets
+# Prediction markets cannot reach exactly 1.00 (would require infinite capital),
+# so we cap take-profit targets at 0.99 to ensure they are reachable.
 _PRICE_CEIL = 0.99
 _PRICE_FLOOR = 0.01
 
-# For high-certainty bets (entry > threshold), use tighter absolute bands
+# For very high-certainty bets (entry > 0.95), use even tighter targets
+# because the remaining upside is extremely limited.
+_VERY_HIGH_CERTAINTY_THRESHOLD = 0.95
+_VERY_HIGH_CERTAINTY_TP_MULT = 1.03   # e.g. entry 0.95 → TP 0.9785 (capped at 0.99)
+_VERY_HIGH_CERTAINTY_SL_MULT = 0.95   # e.g. entry 0.95 → SL 0.9025
+
+# For high-certainty bets (entry > 0.85), use tighter absolute bands
 # instead of percentages that would overshoot 1.0
 _HIGH_CERTAINTY_THRESHOLD = 0.85
-_HIGH_CERTAINTY_TP_SPREAD = 0.04   # e.g. entry 0.95 → TP 0.99
-_HIGH_CERTAINTY_SL_SPREAD = 0.05   # e.g. entry 0.95 → SL 0.90
+_HIGH_CERTAINTY_TP_SPREAD = 0.04   # e.g. entry 0.90 → TP 0.94
+_HIGH_CERTAINTY_SL_SPREAD = 0.05   # e.g. entry 0.90 → SL 0.85
+
+# For entries above 0.90, tighten stop-loss dynamically to reduce risk
+# when there's limited upside.
+_TIGHT_SL_THRESHOLD = 0.90
+_TIGHT_SL_MULT = 0.95   # e.g. entry 0.92 → SL 0.874
 
 # Low-certainty bets (entry < threshold) — tighter on the other side
 _LOW_CERTAINTY_THRESHOLD = 0.15
@@ -52,10 +65,18 @@ MAX_HOLD_DAYS = 14
 def _calc_tp(entry: float, tp_pct: float) -> float:
     """Calculate take-profit, capped at _PRICE_CEIL.
 
+    Prediction market constraint: prices are bounded [0, 1] and cannot reach
+    exactly 1.00 in practice. We cap all TP values at 0.99.
+
+    For very high-certainty entries (>0.95), uses minimal percentage multiplier
+    to ensure realistic profit targets given limited remaining upside.
     For high-certainty entries (>0.85), uses absolute spread to avoid
     unreachable targets above 1.0.
     """
-    if entry >= _HIGH_CERTAINTY_THRESHOLD:
+    if entry >= _VERY_HIGH_CERTAINTY_THRESHOLD:
+        # For entries above 0.95, use tight multiplier and cap at 0.99
+        tp = entry * _VERY_HIGH_CERTAINTY_TP_MULT
+    elif entry >= _HIGH_CERTAINTY_THRESHOLD:
         tp = entry + _HIGH_CERTAINTY_TP_SPREAD
     elif entry <= _LOW_CERTAINTY_THRESHOLD:
         tp = entry - _LOW_CERTAINTY_TP_SPREAD  # TP is lower for NO-like bets at low prices
@@ -71,9 +92,16 @@ def _calc_sl(entry: float, sl_pct: float) -> float:
     """Calculate stop-loss, floored at _PRICE_FLOOR.
 
     For high-certainty entries (>0.85), uses absolute spread to ensure
-    reasonable stop-loss distances.
+    reasonable stop-loss distances. For entries above 0.90, uses even
+    tighter stop-loss (95% of entry) to limit risk when upside is capped.
     """
-    if entry >= _HIGH_CERTAINTY_THRESHOLD:
+    if entry >= _VERY_HIGH_CERTAINTY_THRESHOLD:
+        # For entries above 0.95, use tight multiplier for stop-loss
+        sl = entry * _VERY_HIGH_CERTAINTY_SL_MULT
+    elif entry >= _TIGHT_SL_THRESHOLD:
+        # For entries above 0.90, tighten SL dynamically
+        sl = entry * _TIGHT_SL_MULT
+    elif entry >= _HIGH_CERTAINTY_THRESHOLD:
         sl = entry - _HIGH_CERTAINTY_SL_SPREAD
     elif entry <= _LOW_CERTAINTY_THRESHOLD:
         sl = entry - _LOW_CERTAINTY_SL_SPREAD
@@ -200,7 +228,8 @@ class Strategy(ABC):
                 )
             elif trade.opened_at is not None:
                 # Time-based exit: close stale positions after MAX_HOLD_DAYS
-                age_days = (datetime.utcnow() - trade.opened_at).days
+                now = datetime.now(timezone.utc)
+                age_days = (now - trade.opened_at).days
                 if age_days >= MAX_HOLD_DAYS:
                     signals.append(
                         ExitSignal(
