@@ -6,7 +6,6 @@ Built with Streamlit + Plotly
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import datetime
 import sqlite3
 from pathlib import Path
@@ -39,8 +38,8 @@ def load_trades():
         ORDER BY opened_at DESC
     """, conn)
     conn.close()
-    df['opened_at'] = pd.to_datetime(df['opened_at'])
-    df['closed_at'] = pd.to_datetime(df['closed_at'])
+    df['opened_at'] = pd.to_datetime(df['opened_at'], format='mixed', utc=True)
+    df['closed_at'] = pd.to_datetime(df['closed_at'], format='mixed', utc=True)
     return df
 
 @st.cache_data(ttl=60)
@@ -52,7 +51,7 @@ def load_market_snapshots():
         ORDER BY recorded_at
     """, conn)
     conn.close()
-    df['recorded_at'] = pd.to_datetime(df['recorded_at'])
+    df['recorded_at'] = pd.to_datetime(df['recorded_at'], format='mixed', utc=True)
     return df
 
 def calculate_portfolio_value_over_time(trades_df, snapshots_df, initial_cash=10000.0):
