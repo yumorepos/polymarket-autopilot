@@ -287,7 +287,12 @@ def _parse_market(raw: dict[str, Any]) -> Market:
     raw_end = raw.get("end_date_iso") or raw.get("endDateIso") or raw.get("end_date")
     if raw_end:
         try:
-            end_date = datetime.fromisoformat(raw_end.rstrip("Z"))
+            # Ensure timezone-aware datetime (API returns UTC with trailing "Z")
+            parsed = datetime.fromisoformat(raw_end.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                from datetime import timezone
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            end_date = parsed
         except ValueError:
             pass
 
