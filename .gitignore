@@ -61,3 +61,4 @@ data/
 # Distribution
 *.tar.gz
 *.whl
+logs/

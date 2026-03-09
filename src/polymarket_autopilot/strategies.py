@@ -27,6 +27,62 @@ from polymarket_autopilot.db import Database, MarketSnapshot, PaperTrade
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Price helpers — prediction market prices are bounded [0, 1]
+# ---------------------------------------------------------------------------
+
+# Maximum / minimum valid prices on prediction markets
+_PRICE_CEIL = 0.99
+_PRICE_FLOOR = 0.01
+
+# For high-certainty bets (entry > threshold), use tighter absolute bands
+# instead of percentages that would overshoot 1.0
+_HIGH_CERTAINTY_THRESHOLD = 0.85
+_HIGH_CERTAINTY_TP_SPREAD = 0.04   # e.g. entry 0.95 → TP 0.99
+_HIGH_CERTAINTY_SL_SPREAD = 0.05   # e.g. entry 0.95 → SL 0.90
+
+# Low-certainty bets (entry < threshold) — tighter on the other side
+_LOW_CERTAINTY_THRESHOLD = 0.15
+_LOW_CERTAINTY_TP_SPREAD = 0.04
+_LOW_CERTAINTY_SL_SPREAD = 0.05
+
+# Time-based exit: close flat positions after this many days
+MAX_HOLD_DAYS = 14
+
+
+def _calc_tp(entry: float, tp_pct: float) -> float:
+    """Calculate take-profit, capped at _PRICE_CEIL.
+
+    For high-certainty entries (>0.85), uses absolute spread to avoid
+    unreachable targets above 1.0.
+    """
+    if entry >= _HIGH_CERTAINTY_THRESHOLD:
+        tp = entry + _HIGH_CERTAINTY_TP_SPREAD
+    elif entry <= _LOW_CERTAINTY_THRESHOLD:
+        tp = entry - _LOW_CERTAINTY_TP_SPREAD  # TP is lower for NO-like bets at low prices
+        tp = max(tp, _PRICE_FLOOR)
+        # Actually for YES bets at low price, TP is still higher
+        tp = entry + _LOW_CERTAINTY_TP_SPREAD
+    else:
+        tp = entry * (1 + tp_pct)
+    return round(min(tp, _PRICE_CEIL), 6)
+
+
+def _calc_sl(entry: float, sl_pct: float) -> float:
+    """Calculate stop-loss, floored at _PRICE_FLOOR.
+
+    For high-certainty entries (>0.85), uses absolute spread to ensure
+    reasonable stop-loss distances.
+    """
+    if entry >= _HIGH_CERTAINTY_THRESHOLD:
+        sl = entry - _HIGH_CERTAINTY_SL_SPREAD
+    elif entry <= _LOW_CERTAINTY_THRESHOLD:
+        sl = entry - _LOW_CERTAINTY_SL_SPREAD
+    else:
+        sl = entry * (1 - sl_pct)
+    return round(max(sl, _PRICE_FLOOR), 6)
+
+
+# ---------------------------------------------------------------------------
 # Signal types
 # ---------------------------------------------------------------------------
 
@@ -120,24 +176,40 @@ class Strategy(ABC):
             if current_price is None:
                 continue
 
-            if current_price >= trade.take_profit:
+            # Clamp stored TP/SL to valid range (fixes legacy positions)
+            effective_tp = min(trade.take_profit, _PRICE_CEIL)
+            effective_sl = max(trade.stop_loss, _PRICE_FLOOR)
+
+            if current_price >= effective_tp:
                 signals.append(
                     ExitSignal(
                         trade_id=trade.id,  # type: ignore[arg-type]
                         exit_price=current_price,
                         status="closed_tp",
-                        reason=f"Take-profit hit ({current_price:.3f} >= {trade.take_profit:.3f})",
+                        reason=f"Take-profit hit ({current_price:.3f} >= {effective_tp:.3f})",
                     )
                 )
-            elif current_price <= trade.stop_loss:
+            elif current_price <= effective_sl:
                 signals.append(
                     ExitSignal(
                         trade_id=trade.id,  # type: ignore[arg-type]
                         exit_price=current_price,
                         status="closed_sl",
-                        reason=f"Stop-loss hit ({current_price:.3f} <= {trade.stop_loss:.3f})",
+                        reason=f"Stop-loss hit ({current_price:.3f} <= {effective_sl:.3f})",
                     )
                 )
+            elif trade.opened_at is not None:
+                # Time-based exit: close stale positions after MAX_HOLD_DAYS
+                age_days = (datetime.utcnow() - trade.opened_at).days
+                if age_days >= MAX_HOLD_DAYS:
+                    signals.append(
+                        ExitSignal(
+                            trade_id=trade.id,  # type: ignore[arg-type]
+                            exit_price=current_price,
+                            status="closed_manual",
+                            reason=f"Time exit ({age_days}d held, max {MAX_HOLD_DAYS}d)",
+                        )
+                    )
 
         return signals
 
@@ -253,8 +325,8 @@ class TailStrategy(Strategy):
             return None
 
         shares = max_spend / yes_price
-        take_profit = round(yes_price * (1 + self.tp_pct), 6)
-        stop_loss = round(yes_price * (1 - self.sl_pct), 6)
+        take_profit = _calc_tp(yes_price, self.tp_pct)
+        stop_loss = _calc_sl(yes_price, self.sl_pct)
 
         reason = (
             f"YES={yes_price:.3f} > {self.min_yes_prob:.0%} threshold; "
@@ -348,8 +420,8 @@ class MarketMakerStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Spread detected: YES+NO={total:.3f} (spread={spread:.3f}), buying {outcome}",
         )
@@ -445,8 +517,8 @@ class AIProbabilityStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Fair value={fair_value:.3f}, market={yes_price:.3f}, divergence={divergence:+.3f}",
         )
@@ -524,8 +596,8 @@ class CorrelationStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=reason,
         )
@@ -609,8 +681,8 @@ class MeanReversionStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Mean reversion: avg={avg_price:.3f}, current={yes_price:.3f}, deviation={deviation:+.1%}",
         )
@@ -698,8 +770,8 @@ class MomentumStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Momentum: {price_change:+.1%} move over {len(snapshots)} snapshots, volume {'increasing' if vol_increasing else 'flat'}",
         )
@@ -781,8 +853,8 @@ class VolatilityStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Volatility: {days_left:.1f} days to expiry, price={yes_price:.3f} (uncertain range)",
         )
@@ -866,8 +938,8 @@ class WhaleFollowStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Whale activity: volume={market.volume:,.0f} vs avg={avg_volume:,.0f} ({market.volume/avg_volume:.1f}x)",
         )
@@ -954,8 +1026,8 @@ class NewsMomentumStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"News momentum: {jump:+.1%} price jump with volume confirmation",
         )
@@ -1034,8 +1106,8 @@ class ContrarianStrategy(Strategy):
             outcome=outcome,
             entry_price=entry,
             shares=round(shares, 4),
-            take_profit=round(entry * (1 + self.tp_pct), 6),
-            stop_loss=round(entry * (1 - self.sl_pct), 6),
+            take_profit=_calc_tp(entry, self.tp_pct),
+            stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
             reason=f"Contrarian: price dropped {drop:+.1%} from avg={avg_price:.3f}, buying fear",
         )
