@@ -22,10 +22,10 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Ruff
-        run: PYTHONPATH=src ruff check src tests dashboard.py
+        run: ruff check src tests dashboard.py
 
       - name: Mypy
-        run: PYTHONPATH=src mypy src
+        run: mypy src
 
       - name: Pytest
-        run: PYTHONPATH=src pytest -q
+        run: pytest -q --import-mode=importlib
