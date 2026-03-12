@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+import random
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,12 +17,18 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+class PolymarketAPIError(RuntimeError):
+    """Raised when Polymarket data cannot be fetched or parsed safely."""
+
+
 def _coerce_json_list(value: Any) -> list[Any]:
     """Coerce a raw value into a list, handling JSON-encoded strings."""
     if isinstance(value, list):
         return value
     if isinstance(value, str):
         import json
+
         try:
             decoded = json.loads(value)
         except json.JSONDecodeError:
@@ -108,12 +115,15 @@ class PolymarketClient:
         max_retries: Number of retries on transient errors.
     """
 
-    def __init__(self, timeout: float = 30.0, max_retries: int = 3) -> None:
+    def __init__(
+        self, timeout: float = 30.0, max_retries: int = 3, base_retry_delay: float = 1.0
+    ) -> None:
         self.timeout = timeout
         self.max_retries = max_retries
+        self.base_retry_delay = base_retry_delay
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "PolymarketClient":
+    async def __aenter__(self) -> PolymarketClient:
         self._client = httpx.AsyncClient(timeout=self.timeout)
         return self
 
@@ -149,7 +159,11 @@ class PolymarketClient:
             try:
                 response = await self._client.get(url, params=params)
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 2 ** attempt))
+                    retry_after = int(
+                        response.headers.get(
+                            "Retry-After", max(1, int(self.base_retry_delay * (2**attempt)))
+                        )
+                    )
                     logger.warning("Rate limited; sleeping %ds", retry_after)
                     await asyncio.sleep(retry_after)
                     continue
@@ -157,12 +171,14 @@ class PolymarketClient:
                 return response.json()
             except httpx.TransportError as exc:
                 if attempt == self.max_retries - 1:
-                    raise
-                wait = 2 ** attempt
-                logger.warning("Transport error (%s); retrying in %ds", exc, wait)
+                    raise PolymarketAPIError(f"Network error calling {url}: {exc}") from exc
+                wait = (self.base_retry_delay * (2**attempt)) + random.uniform(0, 0.25)
+                logger.warning("Transport error (%s); retrying in %.2fs", exc, wait)
                 await asyncio.sleep(wait)
+            except ValueError as exc:
+                raise PolymarketAPIError(f"Invalid JSON from {url}: {exc}") from exc
 
-        raise RuntimeError(f"Failed to GET {url} after {self.max_retries} attempts")
+        raise PolymarketAPIError(f"Failed to GET {url} after {self.max_retries} attempts")
 
     # ------------------------------------------------------------------
     # Public methods
@@ -205,7 +221,11 @@ class PolymarketClient:
 
         markets: list[Market] = []
         for raw in raw_markets:
-            market = _parse_market(raw)
+            try:
+                market = _parse_market(raw)
+            except ValueError as exc:
+                logger.warning("Skipping malformed market payload: %s", exc)
+                continue
             if active and (market.closed or not market.active):
                 continue
             markets.append(market)
@@ -246,10 +266,11 @@ class PolymarketClient:
             if exc.response.status_code == 404:
                 return None
             raise
+        except ValueError as exc:
+            logger.warning("Malformed market response for %s: %s", condition_id, exc)
+            return None
 
-    async def get_market_snapshots(
-        self, condition_ids: list[str]
-    ) -> dict[str, Market]:
+    async def get_market_snapshots(self, condition_ids: list[str]) -> dict[str, Market]:
         """Fetch the latest state for a list of markets concurrently.
 
         Args:
@@ -261,7 +282,7 @@ class PolymarketClient:
         tasks = [self.get_market(cid) for cid in condition_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         snapshots: dict[str, Market] = {}
-        for cid, result in zip(condition_ids, results):
+        for cid, result in zip(condition_ids, results, strict=False):
             if isinstance(result, Market):
                 snapshots[cid] = result
             elif isinstance(result, Exception):
@@ -322,14 +343,19 @@ def _parse_market(raw: dict[str, Any]) -> Market:
 
     volume_raw = raw.get("volume") or raw.get("volume_num") or 0.0
 
-    condition_id = str(raw.get("condition_id", raw.get("conditionId", "")) or "")
+    condition_id = str(raw.get("condition_id", raw.get("conditionId", "")) or "").strip()
     question = str(raw.get("question", "") or "")
+
+    if not condition_id:
+        raise ValueError("Market payload missing condition_id")
+    if not outcomes:
+        raise ValueError(f"Market {condition_id} has no valid outcomes")
 
     return Market(
         condition_id=condition_id,
         question=question,
         outcomes=outcomes,
-        volume=_safe_float(volume_raw, 0.0),
+        volume=max(_safe_float(volume_raw, 0.0), 0.0),
         end_date=end_date,
         active=bool(raw.get("active", True)),
         closed=bool(raw.get("closed", False)),

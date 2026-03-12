@@ -6,9 +6,9 @@ and strategy breakdown. Designed for Telegram delivery.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from polymarket_autopilot.db import Database, PaperTrade
+from polymarket_autopilot.db import Database
 from polymarket_autopilot.portfolio import PortfolioTracker
 
 
@@ -29,12 +29,10 @@ def generate_daily_report(db: Database) -> str:
     all_trades = db.get_trade_history(limit=200, offset=0)
 
     today_opened = [
-        t for t in all_trades
-        if t.opened_at and t.opened_at >= today_start and t.status == "open"
+        t for t in all_trades if t.opened_at and t.opened_at >= today_start and t.status == "open"
     ]
     today_closed = [
-        t for t in all_trades
-        if t.closed_at and t.closed_at >= today_start and t.status != "open"
+        t for t in all_trades if t.closed_at and t.closed_at >= today_start and t.status != "open"
     ]
 
     today_pnl = sum(t.pnl or 0 for t in today_closed)
@@ -65,13 +63,13 @@ def generate_daily_report(db: Database) -> str:
         f"📈 **Total Return:** {sign}{report.total_return_pct:.2f}%",
         f"📉 **Realised P&L:** ${report.realised_pnl:+,.2f}",
         "",
-        f"**Today:**",
+        "**Today:**",
         f"  • Opened: {len(today_opened)} trades",
         f"  • Closed: {len(today_closed)} trades",
         f"  • Today P&L: {today_sign}${abs(today_pnl):,.2f}",
         "",
         f"**Positions:** {report.open_positions} open (${report.open_cost_basis:,.2f} deployed)",
-        f"**Win Rate:** {report.win_rate*100:.1f}% ({report.closed_trades} closed trades)",
+        f"**Win Rate:** {report.win_rate * 100:.1f}% ({report.closed_trades} closed trades)",
     ]
 
     # Strategy breakdown
@@ -90,9 +88,7 @@ def generate_daily_report(db: Database) -> str:
         lines.append("")
         lines.append(f"**Open Positions ({len(open_trades)}):**")
         for t in open_trades[:10]:  # Show max 10
-            lines.append(
-                f"  • {t.outcome} {t.question[:40]}… @ {t.entry_price:.3f}"
-            )
+            lines.append(f"  • {t.outcome} {t.question[:40]}… @ {t.entry_price:.3f}")
         if len(open_trades) > 10:
             lines.append(f"  _...and {len(open_trades) - 10} more_")
 

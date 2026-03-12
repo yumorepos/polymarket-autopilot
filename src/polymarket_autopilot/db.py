@@ -9,11 +9,11 @@ Manages three tables:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -34,14 +34,14 @@ class PaperTrade:
     id: int | None
     condition_id: str
     question: str
-    outcome: str           # "YES" or "NO"
+    outcome: str  # "YES" or "NO"
     strategy: str
     shares: float
     entry_price: float
     exit_price: float | None
-    take_profit: float     # target exit price
-    stop_loss: float       # stop-loss exit price
-    status: str            # "open" | "closed_tp" | "closed_sl" | "closed_manual"
+    take_profit: float  # target exit price
+    stop_loss: float  # stop-loss exit price
+    status: str  # "open" | "closed_tp" | "closed_sl" | "closed_manual"
     pnl: float | None
     opened_at: datetime
     closed_at: datetime | None
@@ -157,6 +157,35 @@ class Database:
             cost = float(row["cost"] or 0.0)
         return cash + cost
 
+    def get_portfolio_summary(self) -> dict[str, float]:
+        """Return cash, open cost, and exposure metrics in one query."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    p.cash AS cash,
+                    COALESCE(
+                        SUM(CASE WHEN t.status = 'open' THEN t.shares * t.entry_price END),
+                        0.0
+                    ) AS open_cost,
+                    COALESCE(SUM(CASE WHEN t.status = 'open' THEN t.shares END), 0.0) AS open_shares
+                FROM portfolio p
+                LEFT JOIN paper_trades t ON 1=1
+                WHERE p.id = 1
+                """
+            ).fetchone()
+
+        cash = float(row["cash"]) if row else STARTING_CAPITAL
+        open_cost = float(row["open_cost"]) if row else 0.0
+        return {
+            "cash": cash,
+            "open_cost": open_cost,
+            "total_value": cash + open_cost,
+            "deployed_pct": (open_cost / (cash + open_cost) * 100.0)
+            if (cash + open_cost) > 0
+            else 0.0,
+        }
+
     # ------------------------------------------------------------------
     # Trades
     # ------------------------------------------------------------------
@@ -192,11 +221,13 @@ class Database:
                 ),
             )
             trade_id = cursor.lastrowid
+            if trade_id is None:
+                raise RuntimeError("Failed to persist trade row")
             conn.execute(
                 "UPDATE portfolio SET cash = cash - ?, updated_at = ? WHERE id = 1",
                 (cost, _now()),
             )
-        return trade_id  # type: ignore[return-value]
+        return trade_id
 
     def close_trade(self, trade_id: int, exit_price: float, status: str) -> PaperTrade | None:
         """Close an open trade and credit proceeds to cash.
@@ -251,7 +282,9 @@ class Database:
             ).fetchall()
         return [_row_to_trade(r) for r in rows]
 
-    def get_trade_history(self, limit: int = 50, offset: int = 0) -> list[PaperTrade]:
+    def get_trade_history(
+        self, limit: int = 50, offset: int = 0, statuses: Sequence[str] | None = None
+    ) -> list[PaperTrade]:
         """Return all trades (open and closed), newest first.
 
         Args:
@@ -262,10 +295,21 @@ class Database:
             List of PaperTrade objects.
         """
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM paper_trades ORDER BY opened_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                rows = conn.execute(
+                    (
+                        "SELECT * FROM paper_trades "
+                        f"WHERE status IN ({placeholders}) "
+                        "ORDER BY opened_at DESC LIMIT ? OFFSET ?"
+                    ),
+                    (*statuses, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM paper_trades ORDER BY opened_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
         return [_row_to_trade(r) for r in rows]
 
     def get_trade_by_condition(self, condition_id: str) -> PaperTrade | None:
@@ -310,9 +354,7 @@ class Database:
                 ),
             )
 
-    def get_recent_snapshots(
-        self, condition_id: str, n: int = 10
-    ) -> list[MarketSnapshot]:
+    def get_recent_snapshots(self, condition_id: str, n: int = 10) -> list[MarketSnapshot]:
         """Return the N most recent snapshots for a market.
 
         Args:

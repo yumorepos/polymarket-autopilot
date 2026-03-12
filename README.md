@@ -5,12 +5,12 @@
 **An algorithmic paper trading engine for prediction markets**
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org)
-[![Tests](https://img.shields.io/badge/Tests-45_passing-success?logo=pytest&logoColor=white)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-55_passing-success?logo=pytest&logoColor=white)](#testing)
 [![Code Style](https://img.shields.io/badge/Code_Style-Ruff-D7FF64?logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
 [![Type Checked](https://img.shields.io/badge/Type_Checked-mypy_strict-blue?logo=python&logoColor=white)](https://mypy-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Scan live [Polymarket](https://polymarket.com) prediction markets, evaluate them with **10 pluggable trading strategies**, simulate trades against a virtual portfolio, backtest against historical data, and receive automated daily P&L reports — all from a single CLI.
+Scan live [Polymarket](https://polymarket.com) prediction markets, evaluate them with pluggable strategies, simulate trades against a virtual portfolio, backtest against collected snapshots, and review performance via CLI + Streamlit dashboard.
 
 [Features](#features) · [Strategies](#strategies) · [Architecture](#architecture) · [Getting Started](#getting-started) · [Usage](#usage) · [Backtesting](#backtesting) · [Contributing](#contributing)
 
@@ -24,21 +24,26 @@ Prediction markets are one of the most efficient mechanisms for aggregating info
 
 Built as a portfolio project to demonstrate:
 - **Quantitative finance concepts** — Kelly criterion sizing, Sharpe ratio, drawdown analysis
-- **Software engineering** — clean architecture, type safety (`mypy --strict`), async I/O, 45+ tests
+- **Software engineering** — clean architecture, type safety (`mypy --strict`), async I/O, 55+ tests
 - **Systems thinking** — end-to-end pipeline from data ingestion to automated execution and reporting
+
+
+## Paper-trading scope
+
+This project is **paper-trading only**. It does not place real-money orders and is intended for strategy research, simulation, and portfolio analytics.
 
 ## Features
 
 | | Feature | Description |
 |-|---------|-------------|
 | 🔌 | **Live Market Data** | Async Polymarket CLOB API client with pagination, retry logic, and rate limiting |
-| 🧠 | **10 Trading Strategies** | From trend-following to contrarian — each with configurable risk parameters |
+| 🧠 | **Strategy Registry + Metadata** | Discoverable via `polymarket-autopilot strategies`, with risk/holding metadata and configurable parameters |
 | 💰 | **Paper Portfolio** | $10K virtual capital with configurable risk guardrails (max positions/exposure/cash buffer), TP/SL lifecycle, and P&L tracking |
 | 📊 | **Backtesting Engine** | Replay strategies against historical snapshots with Sharpe ratio, max drawdown, and win rate |
 | 📋 | **Daily Reports** | Automated P&L summaries with strategy breakdowns, ready for Telegram delivery |
 | ⏰ | **Cron Automation** | Hands-free trading via included shell scripts — set it and forget it |
 | 🗄️ | **SQLite Persistence** | Trades, portfolio state, and market snapshots stored locally — no external services |
-| 🧪 | **Fully Tested** | 45 tests covering API parsing, database CRUD, strategy signals, portfolio tracking, and backtesting |
+| 🧪 | **Fully Tested** | 55 tests covering API parsing, database CRUD, strategy signals, portfolio tracking, and backtesting |
 
 ## Strategies
 
@@ -69,7 +74,7 @@ polymarket-autopilot/
 │   ├── backtest.py          # Backtesting engine with Sharpe/drawdown
 │   ├── report_generator.py  # Daily P&L report builder
 │   └── cli.py               # Click CLI — init/scan/trade/report/history/backtest
-├── tests/                   # 45 tests (pytest + pytest-asyncio)
+├── tests/                   # 55 tests (pytest)
 ├── scripts/
 │   ├── auto_trade.sh        # Cron-ready automated trade cycle
 │   └── collect_snapshots.py # Historical data collector
@@ -137,6 +142,12 @@ cp .env.example .env
 polymarket-autopilot init
 # Database initialised at: data/autopilot.db
 # Starting cash balance:   $10,000.00
+```
+
+### List available strategies
+
+```bash
+polymarket-autopilot strategies
 ```
 
 ### Scan markets for signals
@@ -245,6 +256,26 @@ polymarket-autopilot backtest --strategy TAIL --days 7
 
 Metrics include: total return, max drawdown, Sharpe ratio, win rate, profit factor, expectancy, average return per trade, best/worst trade, average trade duration, and per-trade detail.
 
+
+## Quick demo (2-3 minutes)
+
+```bash
+# 1) setup
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2) initialize + inspect available strategies
+polymarket-autopilot init
+polymarket-autopilot strategies
+
+# 3) run a safe local simulation
+polymarket-autopilot backtest --strategy TAIL --days 7
+polymarket-autopilot report
+
+# 4) launch dashboard
+streamlit run dashboard.py
+```
+
 ## Automation
 
 Set up hands-free trading with the included cron script:
@@ -297,7 +328,7 @@ pytest tests/test_strategies.py
 pytest --cov=polymarket_autopilot
 ```
 
-**45 tests** covering:
+**55 tests** covering:
 - API response parsing and market object construction
 - Database CRUD operations and schema migrations
 - All strategy signal generation and edge cases
@@ -325,3 +356,10 @@ pytest --cov=polymarket_autopilot
 Built by [Yumo](https://github.com/yumorepos) · Feedback and contributions welcome
 
 </div>
+
+
+## Known limitations
+
+- Live scan/trade commands depend on outbound network access to Polymarket APIs.
+- Backtests replay local snapshot data and are only as good as the snapshot coverage collected.
+- Local fallback shims for `httpx` and `python-dotenv` are included for restricted environments; in normal development, install dependencies from `pyproject.toml`.

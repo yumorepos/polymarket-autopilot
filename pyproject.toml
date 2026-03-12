@@ -40,7 +40,6 @@ polymarket-autopilot = "polymarket_autopilot.cli:cli"
 where = ["src"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -50,6 +49,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["UP017"]
 
 [tool.mypy]
 python_version = "3.12"

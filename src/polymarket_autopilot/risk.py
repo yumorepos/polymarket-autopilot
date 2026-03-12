@@ -47,17 +47,13 @@ def check_entry_risk(db: Database, signal: TradeSignal, config: RiskConfig) -> R
         return RiskDecision(False, "cash_buffer_breach")
 
     market_exposure = sum(
-        t.shares * t.entry_price
-        for t in open_trades
-        if t.condition_id == signal.condition_id
+        t.shares * t.entry_price for t in open_trades if t.condition_id == signal.condition_id
     )
     if market_exposure + trade_cost > config.max_exposure_per_market:
         return RiskDecision(False, "market_exposure_limit")
 
     strategy_exposure = sum(
-        t.shares * t.entry_price
-        for t in open_trades
-        if t.strategy == signal.strategy
+        t.shares * t.entry_price for t in open_trades if t.strategy == signal.strategy
     )
     if strategy_exposure + trade_cost > config.max_exposure_per_strategy:
         return RiskDecision(False, "strategy_exposure_limit")

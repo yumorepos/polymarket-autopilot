@@ -13,20 +13,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
 
-from polymarket_autopilot.api import PolymarketClient
-from polymarket_autopilot.db import Database, MarketSnapshot, DEFAULT_DB_PATH
-from polymarket_autopilot.portfolio import PortfolioTracker
-from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
+from dotenv import load_dotenv
+from polymarket_autopilot.api import PolymarketAPIError, PolymarketClient
 from polymarket_autopilot.backtest import Backtester, format_backtest_result
+from polymarket_autopilot.db import DEFAULT_DB_PATH, Database, MarketSnapshot
+from polymarket_autopilot.portfolio import PortfolioTracker
 from polymarket_autopilot.report_generator import generate_daily_report
 from polymarket_autopilot.risk import RiskConfig, check_entry_risk
+from polymarket_autopilot.strategies import (
+    STRATEGIES,
+    Strategy,
+    get_strategy,
+    list_strategies,
+    signal_to_trade,
+)
 
 load_dotenv()
 
@@ -42,6 +47,15 @@ def _get_db(db_path: str) -> Database:
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
+
+
+def _resolve_strategies(strategy: str, db: Database) -> tuple[list[str], list[Strategy]]:
+    strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy.upper()]
+    try:
+        strategies = [get_strategy(name, db) for name in strategy_names]
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return strategy_names, strategies
 
 
 @click.group()
@@ -70,6 +84,17 @@ def cli(ctx: click.Context, db: str, log_level: str) -> None:
     ctx.obj["db_path"] = db
 
 
+@cli.command(name="strategies")
+def strategies_cmd() -> None:
+    """List available strategies and their metadata."""
+    click.echo("\nAvailable strategies:")
+    for meta in list_strategies():
+        click.echo(
+            f"- {meta.name:<18} risk={meta.risk_profile:<8} "
+            f"holding={meta.holding_style:<12} signal={meta.signal_family}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
@@ -92,26 +117,33 @@ def init(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--strategy", default="TAIL", show_default=True,
-              help="Strategy to evaluate (or 'all' for all strategies).")
+@click.option(
+    "--strategy",
+    default="TAIL",
+    show_default=True,
+    help="Strategy to evaluate (or 'all' for all strategies).",
+)
 @click.option("--max-pages", default=3, show_default=True, help="Max API pages to fetch.")
-@click.option("--record/--no-record", default=True, show_default=True,
-              help="Record market snapshots to the database.")
+@click.option(
+    "--record/--no-record",
+    default=True,
+    show_default=True,
+    help="Record market snapshots to the database.",
+)
 @click.pass_context
 def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> None:
     """Scan active markets and display trade signals (no trades executed)."""
     db = _get_db(ctx.obj["db_path"])
 
-    strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
-    strategies = [get_strategy(name, db) for name in strategy_names]
+    strategy_names, strategies = _resolve_strategies(strategy, db)
+
     async def _run() -> None:
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets (up to {max_pages} pages)…")
             try:
                 markets = await client.get_all_active_markets(max_pages=max_pages)
-            except Exception as exc:
-                click.echo(f"Market fetch failed: {exc}")
-                return
+            except PolymarketAPIError as exc:
+                raise click.ClickException(f"Market fetch failed: {exc}") from exc
             click.echo(f"Found {len(markets)} active markets.")
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
@@ -141,9 +173,9 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
                 click.echo("No signals generated.")
                 return
 
-            click.echo(f"\n{'='*70}")
+            click.echo(f"\n{'=' * 70}")
             click.echo(f"  {len(signals)} signal(s) from {len(strategies)} strategy(ies)")
-            click.echo(f"{'='*70}")
+            click.echo(f"{'=' * 70}")
             for s in signals:
                 click.echo(
                     f"\n  [{s.strategy}]"
@@ -153,7 +185,7 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
                     f"\n  TP     : {s.take_profit:.3f}  SL: {s.stop_loss:.3f}"
                     f"\n  Reason : {s.reason}"
                 )
-            click.echo(f"\n{'='*70}")
+            click.echo(f"\n{'=' * 70}")
 
     asyncio.run(_run())
 
@@ -164,15 +196,49 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
 
 
 @cli.command()
-@click.option("--strategy", default="TAIL", show_default=True,
-              help="Strategy to run (or 'all' for all strategies).")
+@click.option(
+    "--strategy",
+    default="TAIL",
+    show_default=True,
+    help="Strategy to run (or 'all' for all strategies).",
+)
 @click.option("--max-pages", default=3, show_default=True, help="Max API pages to fetch.")
 @click.option("--dry-run", is_flag=True, help="Show what would be traded without executing.")
-@click.option("--max-positions", default=12, show_default=True, type=int, help="Max concurrent open positions.")
-@click.option("--max-exposure-market", default=800.0, show_default=True, type=float, help="Max USD exposure per market.")
-@click.option("--max-exposure-strategy", default=2500.0, show_default=True, type=float, help="Max USD exposure per strategy.")
-@click.option("--max-trade-cost", default=400.0, show_default=True, type=float, help="Max USD allocated per trade.")
-@click.option("--cash-buffer", default=1000.0, show_default=True, type=float, help="Minimum cash that must remain after a trade.")
+@click.option(
+    "--max-positions",
+    default=12,
+    show_default=True,
+    type=int,
+    help="Max concurrent open positions.",
+)
+@click.option(
+    "--max-exposure-market",
+    default=800.0,
+    show_default=True,
+    type=float,
+    help="Max USD exposure per market.",
+)
+@click.option(
+    "--max-exposure-strategy",
+    default=2500.0,
+    show_default=True,
+    type=float,
+    help="Max USD exposure per strategy.",
+)
+@click.option(
+    "--max-trade-cost",
+    default=400.0,
+    show_default=True,
+    type=float,
+    help="Max USD allocated per trade.",
+)
+@click.option(
+    "--cash-buffer",
+    default=1000.0,
+    show_default=True,
+    type=float,
+    help="Minimum cash that must remain after a trade.",
+)
 @click.pass_context
 def trade(
     ctx: click.Context,
@@ -188,8 +254,7 @@ def trade(
     """Run a full scan-and-trade cycle: record snapshots, open/close positions."""
     db = _get_db(ctx.obj["db_path"])
 
-    strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
-    strategies = [get_strategy(name, db) for name in strategy_names]
+    strategy_names, strategies = _resolve_strategies(strategy, db)
     risk = RiskConfig(
         max_positions=max_positions,
         max_exposure_per_market=max_exposure_market,
@@ -200,12 +265,11 @@ def trade(
 
     async def _run() -> None:
         async with PolymarketClient() as client:
-            click.echo(f"Fetching markets…")
+            click.echo("Fetching markets…")
             try:
                 markets = await client.get_all_active_markets(max_pages=max_pages)
-            except Exception as exc:
-                click.echo(f"Market fetch failed: {exc}")
-                return
+            except PolymarketAPIError as exc:
+                raise click.ClickException(f"Market fetch failed: {exc}") from exc
             click.echo(f"{len(markets)} active markets fetched.")
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
@@ -237,9 +301,15 @@ def trade(
                     else:
                         closed = db.close_trade(sig.trade_id, sig.exit_price, sig.status)
                         if closed:
-                            pnl_str = f"+${closed.pnl:.2f}" if (closed.pnl or 0) >= 0 else f"-${abs(closed.pnl or 0):.2f}"
+                            pnl_str = (
+                                f"+${closed.pnl:.2f}"
+                                if (closed.pnl or 0) >= 0
+                                else f"-${abs(closed.pnl or 0):.2f}"
+                            )
                             click.echo(
-                                f"[CLOSED] [{strat.name}] #{sig.trade_id} {sig.reason}  PnL: {pnl_str}"
+                                "[CLOSED] "
+                                f"[{strat.name}] #{sig.trade_id} {sig.reason} "
+                                f" PnL: {pnl_str}"
                             )
 
             # --- process entry signals for all strategies ---
@@ -294,12 +364,13 @@ def report(ctx: click.Context) -> None:
     r = tracker.get_report()
 
     sign = "+" if r.total_return_pct >= 0 else ""
-    click.echo(f"\n{'='*50}")
+    click.echo(f"\n{'=' * 50}")
     click.echo("  PORTFOLIO REPORT")
-    click.echo(f"{'='*50}")
+    click.echo(f"{'=' * 50}")
     click.echo(f"  Starting capital : ${r.starting_capital:>10,.2f}")
     click.echo(f"  Cash             : ${r.cash:>10,.2f}")
     click.echo(f"  Open positions   : {r.open_positions:>10}  (cost: ${r.open_cost_basis:.2f})")
+    click.echo(f"  Deployed capital : {r.deployed_pct:>9.2f}%")
     click.echo(f"  Total value      : ${r.total_value:>10,.2f}")
     click.echo(f"  Total return     : {sign}{r.total_return_pct:>9.2f}%")
     click.echo(f"  Realised P&L     : ${r.realised_pnl:>+10.2f}")
@@ -308,17 +379,17 @@ def report(ctx: click.Context) -> None:
 
     if r.strategy_stats:
         click.echo(f"\n  {'Strategy':<12}  {'Trades':>6}  {'Wins':>5}  {'Win%':>6}  {'PnL':>10}")
-        click.echo(f"  {'-'*50}")
+        click.echo(f"  {'-' * 50}")
         for s in r.strategy_stats.values():
             click.echo(
                 f"  {s.name:<12}  {s.total_trades:>6}  {s.wins:>5}  "
-                f"{s.win_rate*100:>5.1f}%  ${s.total_pnl:>+9.2f}"
+                f"{s.win_rate * 100:>5.1f}%  ${s.total_pnl:>+9.2f}"
             )
 
     if r.open_trades:
         click.echo(f"\n  Open Positions ({r.open_positions}):")
         click.echo(f"  {'#':>4}  {'Outcome':>7}  {'Entry':>6}  {'TP':>6}  {'SL':>6}  Question")
-        click.echo(f"  {'-'*70}")
+        click.echo(f"  {'-' * 70}")
         for t in r.open_trades:
             click.echo(
                 f"  {t.id:>4}  {t.outcome:>7}  {t.entry_price:>6.3f}  "
@@ -326,7 +397,7 @@ def report(ctx: click.Context) -> None:
                 f"{t.question[:40]}"
             )
 
-    click.echo(f"{'='*50}\n")
+    click.echo(f"{'=' * 50}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +418,11 @@ def history(ctx: click.Context, limit: int, offset: int) -> None:
         click.echo("No trades found.")
         return
 
-    click.echo(f"\n{'='*80}")
+    click.echo(f"\n{'=' * 80}")
     click.echo(
-        f"  {'#':>4}  {'Status':<12}  {'Out':>4}  {'Entry':>6}  "
-        f"{'Exit':>6}  {'PnL':>8}  Question"
+        f"  {'#':>4}  {'Status':<12}  {'Out':>4}  {'Entry':>6}  {'Exit':>6}  {'PnL':>8}  Question"
     )
-    click.echo(f"  {'-'*78}")
+    click.echo(f"  {'-' * 78}")
     for t in trades:
         exit_str = f"{t.exit_price:.3f}" if t.exit_price is not None else "  —  "
         pnl_str = f"${t.pnl:>+.2f}" if t.pnl is not None else "      —"
@@ -360,7 +430,7 @@ def history(ctx: click.Context, limit: int, offset: int) -> None:
             f"  {t.id:>4}  {t.status:<12}  {t.outcome:>4}  {t.entry_price:>6.3f}  "
             f"{exit_str:>6}  {pnl_str:>8}  {t.question[:35]}"
         )
-    click.echo(f"{'='*80}\n")
+    click.echo(f"{'=' * 80}\n")
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 
 class TransportError(Exception):
@@ -17,7 +18,7 @@ class TransportError(Exception):
 
 
 class HTTPStatusError(Exception):
-    def __init__(self, message: str, request: object, response: "Response") -> None:
+    def __init__(self, message: str, request: object, response: Response) -> None:
         super().__init__(message)
         self.request = request
         self.response = response
@@ -29,7 +30,7 @@ class Response:
     _body: bytes
     headers: dict[str, str]
 
-    def json(self):
+    def json(self) -> Any:
         return json.loads(self._body.decode("utf-8"))
 
     @property
@@ -52,7 +53,11 @@ class AsyncClient:
     async def aclose(self) -> None:
         return None
 
-    async def get(self, url: str, params: dict | None = None) -> Response:
+    async def get(
+        self,
+        url: str,
+        params: dict[str, str | int | float | bool] | None = None,
+    ) -> Response:
         import asyncio
 
         def _fetch() -> Response:

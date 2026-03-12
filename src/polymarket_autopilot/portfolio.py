@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from polymarket_autopilot.db import Database, PaperTrade, STARTING_CAPITAL
+from polymarket_autopilot.db import STARTING_CAPITAL, Database, PaperTrade
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,7 @@ class PortfolioReport:
     total_return_pct: float
     realised_pnl: float
     unrealised_pnl: float
+    deployed_pct: float
     closed_trades: int
     win_rate: float
     strategy_stats: dict[str, StrategyStats] = field(default_factory=dict)
@@ -96,21 +97,20 @@ class PortfolioTracker:
         Returns:
             PortfolioReport with current state and statistics.
         """
-        cash = self.db.get_cash()
+        summary = self.db.get_portfolio_summary()
+        cash = summary["cash"]
         open_trades = self.db.get_open_trades()
         all_trades = self.db.get_trade_history(limit=10_000)
 
-        open_cost = sum(t.shares * t.entry_price for t in open_trades)
-        total_value = cash + open_cost
+        open_cost = summary["open_cost"]
+        total_value = summary["total_value"]
 
         closed = [t for t in all_trades if t.status != "open"]
         realised_pnl = sum(t.pnl or 0.0 for t in closed)
         wins = [t for t in closed if (t.pnl or 0.0) > 0]
         win_rate = len(wins) / len(closed) if closed else 0.0
 
-        total_return_pct = (
-            (total_value - STARTING_CAPITAL) / STARTING_CAPITAL * 100
-        )
+        total_return_pct = (total_value - STARTING_CAPITAL) / STARTING_CAPITAL * 100
 
         strategy_stats = _compute_strategy_stats(closed)
 
@@ -123,6 +123,7 @@ class PortfolioTracker:
             total_return_pct=total_return_pct,
             realised_pnl=realised_pnl,
             unrealised_pnl=0.0,
+            deployed_pct=summary["deployed_pct"],
             closed_trades=len(closed),
             win_rate=win_rate,
             strategy_stats=strategy_stats,

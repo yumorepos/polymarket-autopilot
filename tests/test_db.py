@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from polymarket_autopilot.db import (
+    STARTING_CAPITAL,
     Database,
     MarketSnapshot,
     PaperTrade,
-    STARTING_CAPITAL,
 )
 
 
