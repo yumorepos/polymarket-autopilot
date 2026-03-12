@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from polymarket_autopilot.api import Market, Outcome
-from polymarket_autopilot.db import Database, MarketSnapshot, STARTING_CAPITAL
+from polymarket_autopilot.db import STARTING_CAPITAL, Database, MarketSnapshot
 from polymarket_autopilot.strategies import TailStrategy, get_strategy
 
 
@@ -52,7 +52,7 @@ class TestTailStrategy:
 
     def test_take_profit_and_stop_loss(self, db: Database) -> None:
         """TAIL should use wide TP/SL for long-shot volatility.
-        
+
         Note: For low-probability entries (<0.15), the _calc_tp/_calc_sl helpers
         use absolute spreads rather than percentages to ensure realistic targets.
         """
@@ -100,7 +100,7 @@ class TestTailStrategy:
         """TAIL should skip markets where price is declining (no momentum)."""
         strat = TailStrategy(db, max_yes_prob=0.20)
         # Seed snapshots with prices higher than current (declining trend)
-        for i in range(5):
+        for _i in range(5):
             db.record_snapshot(
                 MarketSnapshot(
                     id=None,

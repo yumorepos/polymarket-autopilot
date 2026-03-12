@@ -1,0 +1,42 @@
+[
+  {
+    "condition_id": "mkt-election",
+    "question": "Will Candidate A win the 2026 election?",
+    "outcome": "YES",
+    "strategy": "MOMENTUM",
+    "shares": 900,
+    "entry_price": 0.45,
+    "take_profit": 0.58,
+    "stop_loss": 0.38,
+    "opened_at": "2026-03-02T10:00:00+00:00",
+    "exit_price": 0.60,
+    "status": "closed_tp",
+    "closed_at": "2026-03-06T10:00:00+00:00"
+  },
+  {
+    "condition_id": "mkt-fed",
+    "question": "Will the Fed cut rates by June 2026?",
+    "outcome": "YES",
+    "strategy": "MEAN_REVERSION",
+    "shares": 700,
+    "entry_price": 0.65,
+    "take_profit": 0.72,
+    "stop_loss": 0.55,
+    "opened_at": "2026-03-02T11:00:00+00:00",
+    "exit_price": 0.53,
+    "status": "closed_sl",
+    "closed_at": "2026-03-05T11:00:00+00:00"
+  },
+  {
+    "condition_id": "mkt-crypto",
+    "question": "Will BTC be above $100k by end of Q2 2026?",
+    "outcome": "YES",
+    "strategy": "TAIL",
+    "shares": 1200,
+    "entry_price": 0.38,
+    "take_profit": 0.50,
+    "stop_loss": 0.30,
+    "opened_at": "2026-03-02T13:00:00+00:00",
+    "status": "open"
+  }
+]

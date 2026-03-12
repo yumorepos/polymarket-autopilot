@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from polymarket_autopilot.api import Market, Outcome, _parse_market
+import pytest
+
+from polymarket_autopilot.api import _parse_market
 
 
 class TestParseMarket:
@@ -50,14 +52,17 @@ class TestParseMarket:
         market = _parse_market(self._raw(end_date_iso=None))
         assert market.end_date is None
 
-    def test_empty_outcomes(self) -> None:
-        market = _parse_market(self._raw(tokens=[]))
-        assert market.outcomes == []
-        assert market.yes_price is None
-        assert market.no_price is None
+    def test_empty_outcomes_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no valid outcomes"):
+            _parse_market(self._raw(tokens=[]))
 
     def test_missing_volume_defaults_to_zero(self) -> None:
         raw = self._raw()
         del raw["volume"]
         market = _parse_market(raw)
         assert market.volume == 0.0
+
+
+def test_missing_condition_id_rejected() -> None:
+    with pytest.raises(ValueError, match="missing condition_id"):
+        _parse_market({"question": "x", "tokens": [{"outcome": "YES", "price": 0.5}]})

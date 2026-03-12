@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polymarket_autopilot.db import Database, PaperTrade, STARTING_CAPITAL
+from polymarket_autopilot.db import STARTING_CAPITAL, Database, PaperTrade
 from polymarket_autopilot.portfolio import PortfolioTracker
 
 

@@ -20,16 +20,12 @@ from polymarket_autopilot.db import (
     Database,
     MarketSnapshot,
     PaperTrade,
-    STARTING_CAPITAL,
 )
 from polymarket_autopilot.strategies import (
     STRATEGIES,
     Strategy,
     TradeSignal,
-    ExitSignal,
     get_strategy,
-    signal_to_trade,
-    _price_for_outcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +46,10 @@ class BacktestTrade:
     strategy: str
     entry_price: float
     exit_price: float | None = None
+    trade_id: int = 0
     shares: float = 0.0
+    take_profit: float = 0.0
+    stop_loss: float = 0.0
     pnl: float = 0.0
     status: str = "open"  # open | closed_tp | closed_sl
     opened_at: datetime | None = None
@@ -83,6 +82,139 @@ class BacktestResult:
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
+@dataclass
+class StrategyComparisonRow:
+    strategy: str
+    total_return_pct: float
+    sharpe_ratio: float
+    max_drawdown_pct: float
+    win_rate: float
+    total_trades: int
+    expectancy: float
+    benchmark_return_pct: float
+    excess_return_pct: float
+    explanation: str
+
+
+def compare_strategies(
+    db: Database,
+    days: int = 7,
+    capital: float = 10_000.0,
+    strategy_names: list[str] | None = None,
+) -> list[StrategyComparisonRow]:
+    """Run backtests for multiple strategies and return ranked comparison rows."""
+    names = strategy_names or sorted(STRATEGIES.keys())
+    benchmark_return_pct = _benchmark_return_pct(db=db, days=days)
+    rows: list[StrategyComparisonRow] = []
+    for name in names:
+        result = Backtester(db, strategy_name=name, starting_capital=capital).run(days=days)
+        excess_return_pct = result.total_return_pct - benchmark_return_pct
+        rows.append(
+            StrategyComparisonRow(
+                strategy=name,
+                total_return_pct=result.total_return_pct,
+                sharpe_ratio=result.sharpe_ratio,
+                max_drawdown_pct=result.max_drawdown_pct,
+                win_rate=result.win_rate,
+                total_trades=result.total_trades,
+                expectancy=result.expectancy,
+                benchmark_return_pct=benchmark_return_pct,
+                excess_return_pct=excess_return_pct,
+                explanation=_strategy_comparison_explanation(
+                    strategy=name,
+                    total_return_pct=result.total_return_pct,
+                    excess_return_pct=excess_return_pct,
+                    sharpe_ratio=result.sharpe_ratio,
+                    max_drawdown_pct=result.max_drawdown_pct,
+                    total_trades=result.total_trades,
+                ),
+            )
+        )
+    return sorted(rows, key=lambda r: (r.total_return_pct, r.sharpe_ratio), reverse=True)
+
+
+def format_strategy_comparison(rows: list[StrategyComparisonRow]) -> str:
+    if not rows:
+        return "No strategy comparison rows to display."
+
+    header = (
+        f"{'Strategy':<18} {'Return%':>8} {'Excess%':>8} {'Sharpe':>8} "
+        f"{'MaxDD%':>8} {'Win%':>8} {'Trades':>8} {'Expectancy':>11}"
+    )
+    benchmark_return = rows[0].benchmark_return_pct
+    lines = [
+        "=" * len(header),
+        "STRATEGY COMPARISON (ranked by return, then Sharpe)",
+        f"Benchmark: Equal-weight YES-hold across demo markets = {benchmark_return:.2f}%",
+        "=" * len(header),
+        header,
+        "-" * len(header),
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.strategy:<18} "
+            f"{row.total_return_pct:>8.2f} "
+            f"{row.excess_return_pct:>8.2f} "
+            f"{row.sharpe_ratio:>8.3f} "
+            f"{row.max_drawdown_pct:>8.2f} "
+            f"{row.win_rate * 100:>8.1f} "
+            f"{row.total_trades:>8d} "
+            f"{row.expectancy:>11.2f}"
+        )
+        lines.append(f"  ↳ {row.explanation}")
+    lines.append("=" * len(header))
+    return "\n".join(lines)
+
+
+def _benchmark_return_pct(db: Database, days: int) -> float:
+    """Simple baseline: equal-weight YES buy-and-hold over snapshot window."""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    with db._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT condition_id, yes_price, recorded_at
+            FROM market_snapshots
+            WHERE recorded_at >= ? AND recorded_at <= ?
+            ORDER BY condition_id, recorded_at
+            """,
+            (start.isoformat(), now.isoformat()),
+        ).fetchall()
+
+    if not rows:
+        return 0.0
+
+    by_market: dict[str, list[float]] = {}
+    for row in rows:
+        by_market.setdefault(str(row[0]), []).append(float(row[1]))
+
+    returns: list[float] = []
+    for prices in by_market.values():
+        if len(prices) < 2 or prices[0] <= 0:
+            continue
+        returns.append((prices[-1] - prices[0]) / prices[0] * 100)
+    return sum(returns) / len(returns) if returns else 0.0
+
+
+def _strategy_comparison_explanation(
+    strategy: str,
+    total_return_pct: float,
+    excess_return_pct: float,
+    sharpe_ratio: float,
+    max_drawdown_pct: float,
+    total_trades: int,
+) -> str:
+    """Deterministic rationale for why a strategy ranks where it does."""
+    if total_trades == 0:
+        return f"{strategy} produced no trades in this window; ranking reflects inactivity."
+
+    edge = "outperformed" if excess_return_pct >= 0 else "underperformed"
+    return (
+        f"{strategy} {edge} baseline by {excess_return_pct:+.2f}%. "
+        f"Sharpe={sharpe_ratio:.2f}, MaxDD={max_drawdown_pct:.2f}%, Trades={total_trades}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # In-memory portfolio for backtest isolation
 # ---------------------------------------------------------------------------
@@ -99,6 +231,7 @@ class _BacktestPortfolio:
         self.cash = starting_capital
         self.starting_capital = starting_capital
         self._open_trades: dict[str, BacktestTrade] = {}  # condition_id -> trade
+        self._next_trade_id = 1
         self._snapshots: dict[str, list[MarketSnapshot]] = {}  # condition_id -> snapshots
 
     # --- Methods that Strategy classes call via self.db ---
@@ -117,7 +250,7 @@ class _BacktestPortfolio:
             return None
         # Return a minimal PaperTrade so strategies see an open position
         return PaperTrade(
-            id=0,
+            id=bt.trade_id,
             condition_id=bt.condition_id,
             question=bt.question,
             outcome=bt.outcome,
@@ -125,8 +258,8 @@ class _BacktestPortfolio:
             shares=bt.shares,
             entry_price=bt.entry_price,
             exit_price=None,
-            take_profit=bt.entry_price * 1.15,
-            stop_loss=bt.entry_price * 0.90,
+            take_profit=bt.take_profit,
+            stop_loss=bt.stop_loss,
             status="open",
             pnl=None,
             opened_at=datetime.now(timezone.utc),
@@ -142,9 +275,7 @@ class _BacktestPortfolio:
                 result.append(pt)
         return result
 
-    def get_recent_snapshots(
-        self, condition_id: str, n: int = 10
-    ) -> list[MarketSnapshot]:
+    def get_recent_snapshots(self, condition_id: str, n: int = 10) -> list[MarketSnapshot]:
         """Return the N most recent snapshots for a market (chronological)."""
         snaps = self._snapshots.get(condition_id, [])
         return snaps[-n:]
@@ -155,24 +286,31 @@ class _BacktestPortfolio:
         """Append a snapshot to the in-memory history."""
         self._snapshots.setdefault(snapshot.condition_id, []).append(snapshot)
 
-    def open_position(self, signal: TradeSignal) -> BacktestTrade:
+    def open_position(
+        self, signal: TradeSignal, opened_at: datetime | None = None
+    ) -> BacktestTrade:
         """Open a position from a trade signal."""
         cost = signal.shares * signal.entry_price
         self.cash -= cost
+        open_time = opened_at or datetime.now(timezone.utc)
         trade = BacktestTrade(
+            trade_id=self._next_trade_id,
             condition_id=signal.condition_id,
             question=signal.question,
             outcome=signal.outcome,
             strategy=signal.strategy,
             entry_price=signal.entry_price,
             shares=signal.shares,
-            opened_at=datetime.now(timezone.utc),
+            take_profit=signal.take_profit,
+            stop_loss=signal.stop_loss,
+            opened_at=open_time,
         )
         self._open_trades[signal.condition_id] = trade
+        self._next_trade_id += 1
         return trade
 
     def close_position(
-        self, condition_id: str, exit_price: float, status: str
+        self, condition_id: str, exit_price: float, status: str, closed_at: datetime | None = None
     ) -> BacktestTrade | None:
         """Close a position and return it."""
         trade = self._open_trades.pop(condition_id, None)
@@ -181,7 +319,7 @@ class _BacktestPortfolio:
         trade.exit_price = exit_price
         trade.pnl = (exit_price - trade.entry_price) * trade.shares
         trade.status = status
-        trade.closed_at = datetime.now(timezone.utc)
+        trade.closed_at = closed_at or datetime.now(timezone.utc)
         self.cash += trade.shares * exit_price
         return trade
 
@@ -242,18 +380,17 @@ class Backtester:
 
         # Instantiate real strategy classes with the backtest portfolio as "db"
         strategy_names = (
-            list(STRATEGIES.keys())
-            if self.strategy_name.upper() == "ALL"
-            else [self.strategy_name]
+            list(STRATEGIES.keys()) if self.strategy_name.upper() == "ALL" else [self.strategy_name]
         )
         strategies: list[Strategy] = []
         for name in strategy_names:
-            strategies.append(get_strategy(name, portfolio))  # type: ignore[arg-type]
+            strategies.append(get_strategy(name, portfolio))
 
         closed_trades: list[BacktestTrade] = []
         portfolio_values: list[float] = [self.starting_capital]
 
         for batch in batches:
+            batch_time = max(s.recorded_at for s in batch)
             # Record snapshots to in-memory history
             for snap in batch:
                 portfolio.record_snapshot(snap)
@@ -266,16 +403,15 @@ class Backtester:
             for strat in strategies:
                 exit_signals = strat.check_exits(market_map)
                 for sig in exit_signals:
-                    # Find the condition_id for this trade
                     for cid, bt in list(portfolio.open_positions.items()):
-                        pt = portfolio.get_trade_by_condition(cid)
-                        if pt is not None and pt.id == sig.trade_id:
-                            closed = portfolio.close_position(
-                                cid, sig.exit_price, sig.status
-                            )
-                            if closed:
-                                closed_trades.append(closed)
-                            break
+                        if bt.trade_id != sig.trade_id:
+                            continue
+                        closed = portfolio.close_position(
+                            cid, sig.exit_price, sig.status, closed_at=batch_time
+                        )
+                        if closed:
+                            closed_trades.append(closed)
+                        break
 
             # --- Check entries using real strategy logic ---
             for strat in strategies:
@@ -287,7 +423,7 @@ class Backtester:
                     cost = signal.shares * signal.entry_price
                     if cost > portfolio.cash or cost <= 0:
                         continue
-                    portfolio.open_position(signal)
+                    portfolio.open_position(signal, opened_at=batch_time)
 
             # Track portfolio value
             portfolio_values.append(portfolio.get_portfolio_value())
@@ -301,9 +437,7 @@ class Backtester:
         losing = [t for t in all_closed if t.pnl <= 0]
 
         ending_capital = portfolio_values[-1] if portfolio_values else self.starting_capital
-        total_return = (
-            (ending_capital - self.starting_capital) / self.starting_capital * 100
-        )
+        total_return = (ending_capital - self.starting_capital) / self.starting_capital * 100
 
         win_rate = len(winning) / len(all_closed) if all_closed else 0.0
         max_dd = self._max_drawdown(portfolio_values)
@@ -316,9 +450,7 @@ class Backtester:
         avg_trade_duration_hours = self._avg_trade_duration_hours(all_closed)
 
         display_name = (
-            self.strategy_name
-            if self.strategy_name.upper() != "ALL"
-            else "ALL STRATEGIES"
+            self.strategy_name if self.strategy_name.upper() != "ALL" else "ALL STRATEGIES"
         )
 
         return BacktestResult(
@@ -348,9 +480,7 @@ class Backtester:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_snapshots_in_range(
-        self, start: datetime, end: datetime
-    ) -> list[MarketSnapshot]:
+    def _get_snapshots_in_range(self, start: datetime, end: datetime) -> list[MarketSnapshot]:
         """Fetch snapshots within a date range from the DB."""
         with self.db._connect() as conn:
             cursor = conn.execute(
@@ -374,9 +504,7 @@ class Backtester:
                     no_price=row[3],
                     volume=row[4],
                     recorded_at=(
-                        datetime.fromisoformat(row[5])
-                        if row[5]
-                        else datetime.now(timezone.utc)
+                        datetime.fromisoformat(row[5]) if row[5] else datetime.now(timezone.utc)
                     ),
                 )
             )
@@ -405,9 +533,7 @@ class Backtester:
 
         return batches
 
-    def _snapshots_to_markets(
-        self, snapshots: list[MarketSnapshot]
-    ) -> dict[str, Market]:
+    def _snapshots_to_markets(self, snapshots: list[MarketSnapshot]) -> dict[str, Market]:
         """Convert snapshots to Market objects for strategy evaluation."""
         markets: dict[str, Market] = {}
         for snap in snapshots:
@@ -518,9 +644,9 @@ def format_backtest_result(result: BacktestResult) -> str:
     """
     sign = "+" if result.total_return_pct >= 0 else ""
     lines = [
-        f"{'='*55}",
+        f"{'=' * 55}",
         f"  BACKTEST REPORT: {result.strategy_name}",
-        f"{'='*55}",
+        f"{'=' * 55}",
         f"  Period         : {result.period_start:%Y-%m-%d} → {result.period_end:%Y-%m-%d}",
         f"  Starting capital: ${result.starting_capital:>10,.2f}",
         f"  Ending capital  : ${result.ending_capital:>10,.2f}",
@@ -531,13 +657,13 @@ def format_backtest_result(result: BacktestResult) -> str:
         f"  Winning         : {result.winning_trades:>10}",
         f"  Losing          : {result.losing_trades:>10}",
         f"  Still open      : {result.open_trades:>10}",
-        f"  Win rate        : {result.win_rate*100:>9.1f}%",
+        f"  Win rate        : {result.win_rate * 100:>9.1f}%",
         f"  Profit factor   : {result.profit_factor:>9.3f}",
         f"  Expectancy      : ${result.expectancy:>8.2f}",
         f"  Avg/trade       : {result.avg_return_per_trade_pct:>8.2f}%",
         f"  Best trade      : ${result.best_trade_pnl:>8.2f}",
         f"  Worst trade     : ${result.worst_trade_pnl:>8.2f}",
         f"  Avg duration    : {result.avg_trade_duration_hours:>8.2f}h",
-        f"{'='*55}",
+        f"{'=' * 55}",
     ]
     return "\n".join(lines)

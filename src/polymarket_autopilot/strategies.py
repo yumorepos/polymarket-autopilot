@@ -20,6 +20,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 
 from polymarket_autopilot.api import Market
 from polymarket_autopilot.db import Database, MarketSnapshot, PaperTrade
@@ -39,19 +40,19 @@ _PRICE_FLOOR = 0.01
 # For very high-certainty bets (entry > 0.95), use even tighter targets
 # because the remaining upside is extremely limited.
 _VERY_HIGH_CERTAINTY_THRESHOLD = 0.95
-_VERY_HIGH_CERTAINTY_TP_MULT = 1.03   # e.g. entry 0.95 → TP 0.9785 (capped at 0.99)
-_VERY_HIGH_CERTAINTY_SL_MULT = 0.95   # e.g. entry 0.95 → SL 0.9025
+_VERY_HIGH_CERTAINTY_TP_MULT = 1.03  # e.g. entry 0.95 → TP 0.9785 (capped at 0.99)
+_VERY_HIGH_CERTAINTY_SL_MULT = 0.95  # e.g. entry 0.95 → SL 0.9025
 
 # For high-certainty bets (entry > 0.85), use tighter absolute bands
 # instead of percentages that would overshoot 1.0
 _HIGH_CERTAINTY_THRESHOLD = 0.85
-_HIGH_CERTAINTY_TP_SPREAD = 0.04   # e.g. entry 0.90 → TP 0.94
-_HIGH_CERTAINTY_SL_SPREAD = 0.05   # e.g. entry 0.90 → SL 0.85
+_HIGH_CERTAINTY_TP_SPREAD = 0.04  # e.g. entry 0.90 → TP 0.94
+_HIGH_CERTAINTY_SL_SPREAD = 0.05  # e.g. entry 0.90 → SL 0.85
 
 # For entries above 0.90, tighten stop-loss dynamically to reduce risk
 # when there's limited upside.
 _TIGHT_SL_THRESHOLD = 0.90
-_TIGHT_SL_MULT = 0.95   # e.g. entry 0.92 → SL 0.874
+_TIGHT_SL_MULT = 0.95  # e.g. entry 0.92 → SL 0.874
 
 # Low-certainty bets (entry < threshold) — tighter on the other side
 _LOW_CERTAINTY_THRESHOLD = 0.15
@@ -148,13 +149,25 @@ class ExitSignal:
 
     trade_id: int
     exit_price: float
-    status: str   # "closed_tp" | "closed_sl" | "closed_manual"
+    status: str  # "closed_tp" | "closed_sl" | "closed_manual"
     reason: str
 
 
 # ---------------------------------------------------------------------------
 # Base strategy
 # ---------------------------------------------------------------------------
+
+
+class StrategyDB(Protocol):
+    def get_open_trades(self) -> list[PaperTrade]: ...
+
+    def get_trade_by_condition(self, condition_id: str) -> PaperTrade | None: ...
+
+    def get_recent_snapshots(self, condition_id: str, n: int = 10) -> list[MarketSnapshot]: ...
+
+    def get_portfolio_value(self) -> float: ...
+
+    def get_cash(self) -> float: ...
 
 
 class Strategy(ABC):
@@ -166,7 +179,7 @@ class Strategy(ABC):
 
     name: str = "base"
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: StrategyDB) -> None:
         self.db = db
 
     @abstractmethod
@@ -208,10 +221,13 @@ class Strategy(ABC):
             effective_tp = min(trade.take_profit, _PRICE_CEIL)
             effective_sl = max(trade.stop_loss, _PRICE_FLOOR)
 
+            if trade.id is None:
+                continue
+
             if current_price >= effective_tp:
                 signals.append(
                     ExitSignal(
-                        trade_id=trade.id,  # type: ignore[arg-type]
+                        trade_id=trade.id,
                         exit_price=current_price,
                         status="closed_tp",
                         reason=f"Take-profit hit ({current_price:.3f} >= {effective_tp:.3f})",
@@ -220,7 +236,7 @@ class Strategy(ABC):
             elif current_price <= effective_sl:
                 signals.append(
                     ExitSignal(
-                        trade_id=trade.id,  # type: ignore[arg-type]
+                        trade_id=trade.id,
                         exit_price=current_price,
                         status="closed_sl",
                         reason=f"Stop-loss hit ({current_price:.3f} <= {effective_sl:.3f})",
@@ -233,7 +249,7 @@ class Strategy(ABC):
                 if age_days >= MAX_HOLD_DAYS:
                     signals.append(
                         ExitSignal(
-                            trade_id=trade.id,  # type: ignore[arg-type]
+                            trade_id=trade.id,
                             exit_price=current_price,
                             status="closed_manual",
                             reason=f"Time exit ({age_days}d held, max {MAX_HOLD_DAYS}d)",
@@ -285,11 +301,11 @@ class TailStrategy(Strategy):
     def __init__(
         self,
         db: Database,
-        max_yes_prob: float = 0.20,      # Changed: now a MAXIMUM (buy long-shots)
-        min_yes_prob: float = 0.05,      # Added: avoid extremely unlikely events
+        max_yes_prob: float = 0.20,  # Changed: now a MAXIMUM (buy long-shots)
+        min_yes_prob: float = 0.05,  # Added: avoid extremely unlikely events
         max_position_pct: float = 0.02,  # Reduced from 0.05 to 0.02 (2% vs 5%)
-        tp_pct: float = 1.00,            # Increased from 0.15 to 1.00 (100% gain target)
-        sl_pct: float = 0.50,            # Increased from 0.10 to 0.50 (50% loss max)
+        tp_pct: float = 1.00,  # Increased from 0.15 to 1.00 (100% gain target)
+        sl_pct: float = 0.50,  # Increased from 0.10 to 0.50 (50% loss max)
         lookback: int = 5,
     ) -> None:
         super().__init__(db)
@@ -379,8 +395,10 @@ class TailStrategy(Strategy):
         stop_loss = _calc_sl(yes_price, self.sl_pct)
 
         reason = (
-            f"Long-shot bet: YES={yes_price:.3f} (in range {self.min_yes_prob:.0%}-{self.max_yes_prob:.0%}); "
-            f"volume/momentum conditions met"
+            "Long-shot bet: "
+            f"YES={yes_price:.3f} "
+            f"(in range {self.min_yes_prob:.0%}-{self.max_yes_prob:.0%}); "
+            "volume/momentum conditions met"
         )
         if len(snapshots) < 2:
             reason += " (volume/trend skipped — insufficient history)"
@@ -570,7 +588,9 @@ class AIProbabilityStrategy(Strategy):
             take_profit=_calc_tp(entry, self.tp_pct),
             stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
-            reason=f"Fair value={fair_value:.3f}, market={yes_price:.3f}, divergence={divergence:+.3f}",
+            reason=(
+                f"Fair value={fair_value:.3f}, market={yes_price:.3f}, divergence={divergence:+.3f}"
+            ),
         )
 
 
@@ -734,7 +754,10 @@ class MeanReversionStrategy(Strategy):
             take_profit=_calc_tp(entry, self.tp_pct),
             stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
-            reason=f"Mean reversion: avg={avg_price:.3f}, current={yes_price:.3f}, deviation={deviation:+.1%}",
+            reason=(
+                f"Mean reversion: avg={avg_price:.3f}, current={yes_price:.3f}, "
+                f"deviation={deviation:+.1%}"
+            ),
         )
 
 
@@ -823,7 +846,10 @@ class MomentumStrategy(Strategy):
             take_profit=_calc_tp(entry, self.tp_pct),
             stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
-            reason=f"Momentum: {price_change:+.1%} move over {len(snapshots)} snapshots, volume {'increasing' if vol_increasing else 'flat'}",
+            reason=(
+                f"Momentum: {price_change:+.1%} move over {len(snapshots)} snapshots, "
+                f"volume {'increasing' if vol_increasing else 'flat'}"
+            ),
         )
 
 
@@ -906,7 +932,10 @@ class VolatilityStrategy(Strategy):
             take_profit=_calc_tp(entry, self.tp_pct),
             stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
-            reason=f"Volatility: {days_left:.1f} days to expiry, price={yes_price:.3f} (uncertain range)",
+            reason=(
+                f"Volatility: {days_left:.1f} days to expiry, "
+                f"price={yes_price:.3f} (uncertain range)"
+            ),
         )
 
 
@@ -991,7 +1020,10 @@ class WhaleFollowStrategy(Strategy):
             take_profit=_calc_tp(entry, self.tp_pct),
             stop_loss=_calc_sl(entry, self.sl_pct),
             strategy=self.name,
-            reason=f"Whale activity: volume={market.volume:,.0f} vs avg={avg_volume:,.0f} ({market.volume/avg_volume:.1f}x)",
+            reason=(
+                f"Whale activity: volume={market.volume:,.0f} "
+                f"vs avg={avg_volume:,.0f} ({market.volume / avg_volume:.1f}x)"
+            ),
         )
 
 
@@ -1181,7 +1213,7 @@ STRATEGIES: dict[str, type[Strategy]] = {
 }
 
 
-def get_strategy(name: str, db: Database, **kwargs: float | int) -> Strategy:
+def get_strategy(name: str, db: StrategyDB, **kwargs: float | int) -> Strategy:
     """Instantiate a strategy by name.
 
     Args:
@@ -1199,7 +1231,7 @@ def get_strategy(name: str, db: Database, **kwargs: float | int) -> Strategy:
     if cls is None:
         available = ", ".join(STRATEGIES)
         raise ValueError(f"Unknown strategy '{name}'. Available: {available}")
-    return cls(db, **kwargs)  # type: ignore[arg-type]
+    return cls(db, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1249,10 +1281,42 @@ def signal_to_trade(signal: TradeSignal) -> PaperTrade:
         closed_at=None,
     )
 
+
 class SIMPLE_MEAN_REVERSAL(Strategy):
     name = "SIMPLE_MEAN_REVERSAL"
-    def evaluate(self, market) -> TradeSignal | None:
+
+    def evaluate(self, market: Market) -> TradeSignal | None:
         # A simple placeholder that does not trade, representing mean-reversion core logic template.
         return None
 
+
 STRATEGIES["SIMPLE_MEAN_REVERSAL"] = SIMPLE_MEAN_REVERSAL
+
+
+@dataclass(frozen=True)
+class StrategyMetadata:
+    name: str
+    risk_profile: str
+    holding_style: str
+    signal_family: str
+
+
+STRATEGY_METADATA: dict[str, StrategyMetadata] = {
+    "TAIL": StrategyMetadata("TAIL", "medium", "swing", "trend+volume"),
+    "MARKET_MAKER": StrategyMetadata("MARKET_MAKER", "low", "short", "spread"),
+    "AI_PROBABILITY": StrategyMetadata("AI_PROBABILITY", "medium", "swing", "mispricing"),
+    "CORRELATION": StrategyMetadata("CORRELATION", "low", "short", "arbitrage"),
+    "MEAN_REVERSION": StrategyMetadata("MEAN_REVERSION", "medium", "swing", "mean-reversion"),
+    "MOMENTUM": StrategyMetadata("MOMENTUM", "med-high", "swing", "momentum"),
+    "VOLATILITY": StrategyMetadata("VOLATILITY", "high", "event-driven", "volatility"),
+    "WHALE_FOLLOW": StrategyMetadata("WHALE_FOLLOW", "medium", "short", "volume-spike"),
+    "NEWS_MOMENTUM": StrategyMetadata("NEWS_MOMENTUM", "med-high", "short", "news-momentum"),
+    "CONTRARIAN": StrategyMetadata("CONTRARIAN", "med-high", "swing", "extreme-fear"),
+    "SIMPLE_MEAN_REVERSAL": StrategyMetadata(
+        "SIMPLE_MEAN_REVERSAL", "low", "template", "placeholder"
+    ),
+}
+
+
+def list_strategies() -> list[StrategyMetadata]:
+    return [STRATEGY_METADATA[name] for name in sorted(STRATEGIES)]
