@@ -21,17 +21,25 @@ st.set_page_config(
 # Database connection
 DB_PATH = Path(__file__).parent / "data" / "autopilot.db"
 
+
+def _side_is_yes(value: str) -> bool:
+    return str(value).strip().upper() == "YES"
+
 @st.cache_data(ttl=60)
 def load_portfolio():
     """Load current portfolio state"""
+    if not DB_PATH.exists():
+        return pd.Series({"cash": 10000.0})
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM portfolio", conn)
     conn.close()
-    return df.iloc[0]
+    return df.iloc[0] if not df.empty else pd.Series({"cash": 10000.0})
 
 @st.cache_data(ttl=60)
 def load_trades():
     """Load all paper trades"""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("""
         SELECT * FROM paper_trades
@@ -45,6 +53,8 @@ def load_trades():
 @st.cache_data(ttl=60)
 def load_market_snapshots():
     """Load market snapshots for portfolio value calculation"""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("""
         SELECT * FROM market_snapshots
@@ -98,7 +108,7 @@ def calculate_portfolio_value_over_time(trades_df, snapshots_df, initial_cash=10
             # Find current price for this position
             snapshot = group[group['condition_id'] == trade['condition_id']]
             if not snapshot.empty:
-                current_price = snapshot.iloc[0]['yes_price'] if trade['outcome'] == 'Yes' else snapshot.iloc[0]['no_price']
+                current_price = snapshot.iloc[0]['yes_price'] if _side_is_yes(trade['outcome']) else snapshot.iloc[0]['no_price']
                 position_pnl = (current_price - trade['entry_price']) * trade['shares']
                 unrealized_pnl += position_pnl
         
@@ -126,6 +136,18 @@ def main():
     portfolio = load_portfolio()
     trades_df = load_trades()
     snapshots_df = load_market_snapshots()
+
+    if trades_df.empty:
+        st.warning("No trade data yet. Run `polymarket-autopilot init` and `polymarket-autopilot trade --dry-run` first.")
+        return
+
+    strategy_filter = st.multiselect(
+        "Strategy Filter",
+        options=sorted(trades_df['strategy'].dropna().unique().tolist()),
+        default=sorted(trades_df['strategy'].dropna().unique().tolist()),
+    )
+    if strategy_filter:
+        trades_df = trades_df[trades_df['strategy'].isin(strategy_filter)]
     
     # Calculate metrics
     open_trades = trades_df[trades_df['status'] == 'open']
@@ -147,14 +169,14 @@ def main():
         for _, trade in open_trades.iterrows():
             if trade['condition_id'] in latest_snapshots.index:
                 snapshot = latest_snapshots.loc[trade['condition_id']]
-                current_price = snapshot['yes_price'] if trade['outcome'] == 'Yes' else snapshot['no_price']
+                current_price = snapshot['yes_price'] if _side_is_yes(trade['outcome']) else snapshot['no_price']
                 position_pnl = (current_price - trade['entry_price']) * trade['shares']
                 unrealized_pnl += position_pnl
     
     total_value = current_cash + unrealized_pnl
     
     # KPI Cards
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
@@ -183,7 +205,15 @@ def main():
             value=len(open_trades),
             delta=f"${unrealized_pnl:,.2f} unrealized"
         )
-    
+
+    with col5:
+        deployed = (open_trades['entry_price'] * open_trades['shares']).sum() if not open_trades.empty else 0.0
+        st.metric(
+            label="🛡️ Deployed Capital",
+            value=f"${deployed:,.2f}",
+            delta=f"{len(open_trades)} open"
+        )
+
     st.markdown("---")
     
     # Equity Curve
@@ -319,7 +349,7 @@ def main():
             open_display['current_price'] = open_display.apply(
                 lambda row: (
                     latest_snapshots.loc[row['condition_id'], 'yes_price']
-                    if row['condition_id'] in latest_snapshots.index and row['outcome'] == 'Yes'
+                    if row['condition_id'] in latest_snapshots.index and _side_is_yes(row['outcome'])
                     else (
                         latest_snapshots.loc[row['condition_id'], 'no_price']
                         if row['condition_id'] in latest_snapshots.index

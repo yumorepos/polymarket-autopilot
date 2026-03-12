@@ -53,6 +53,8 @@ class BacktestTrade:
     shares: float = 0.0
     pnl: float = 0.0
     status: str = "open"  # open | closed_tp | closed_sl
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
 
 
 @dataclass
@@ -72,6 +74,12 @@ class BacktestResult:
     winning_trades: int
     losing_trades: int
     open_trades: int
+    profit_factor: float
+    expectancy: float
+    avg_return_per_trade_pct: float
+    best_trade_pnl: float
+    worst_trade_pnl: float
+    avg_trade_duration_hours: float
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
@@ -158,6 +166,7 @@ class _BacktestPortfolio:
             strategy=signal.strategy,
             entry_price=signal.entry_price,
             shares=signal.shares,
+            opened_at=datetime.now(timezone.utc),
         )
         self._open_trades[signal.condition_id] = trade
         return trade
@@ -172,6 +181,7 @@ class _BacktestPortfolio:
         trade.exit_price = exit_price
         trade.pnl = (exit_price - trade.entry_price) * trade.shares
         trade.status = status
+        trade.closed_at = datetime.now(timezone.utc)
         self.cash += trade.shares * exit_price
         return trade
 
@@ -298,6 +308,12 @@ class Backtester:
         win_rate = len(winning) / len(all_closed) if all_closed else 0.0
         max_dd = self._max_drawdown(portfolio_values)
         sharpe = self._sharpe_ratio(portfolio_values)
+        profit_factor = self._profit_factor(all_closed)
+        expectancy = self._expectancy(all_closed)
+        avg_return_per_trade_pct = self._avg_return_per_trade_pct(all_closed)
+        best_trade_pnl = max((t.pnl for t in all_closed), default=0.0)
+        worst_trade_pnl = min((t.pnl for t in all_closed), default=0.0)
+        avg_trade_duration_hours = self._avg_trade_duration_hours(all_closed)
 
         display_name = (
             self.strategy_name
@@ -319,6 +335,12 @@ class Backtester:
             winning_trades=len(winning),
             losing_trades=len(losing),
             open_trades=len(still_open),
+            profit_factor=profit_factor,
+            expectancy=expectancy,
+            avg_return_per_trade_pct=avg_return_per_trade_pct,
+            best_trade_pnl=best_trade_pnl,
+            worst_trade_pnl=worst_trade_pnl,
+            avg_trade_duration_hours=avg_trade_duration_hours,
             trades=all_trades,
         )
 
@@ -448,7 +470,41 @@ class Backtester:
             winning_trades=0,
             losing_trades=0,
             open_trades=0,
+            profit_factor=0.0,
+            expectancy=0.0,
+            avg_return_per_trade_pct=0.0,
+            best_trade_pnl=0.0,
+            worst_trade_pnl=0.0,
+            avg_trade_duration_hours=0.0,
         )
+
+    def _profit_factor(self, trades: list[BacktestTrade]) -> float:
+        gross_profit = sum(t.pnl for t in trades if t.pnl > 0)
+        gross_loss = abs(sum(t.pnl for t in trades if t.pnl < 0))
+        if gross_loss == 0:
+            return gross_profit if gross_profit > 0 else 0.0
+        return gross_profit / gross_loss
+
+    def _expectancy(self, trades: list[BacktestTrade]) -> float:
+        if not trades:
+            return 0.0
+        return sum(t.pnl for t in trades) / len(trades)
+
+    def _avg_return_per_trade_pct(self, trades: list[BacktestTrade]) -> float:
+        returns = [
+            (t.pnl / (t.entry_price * t.shares) * 100)
+            for t in trades
+            if (t.entry_price * t.shares) > 0
+        ]
+        return sum(returns) / len(returns) if returns else 0.0
+
+    def _avg_trade_duration_hours(self, trades: list[BacktestTrade]) -> float:
+        durations = [
+            (t.closed_at - t.opened_at).total_seconds() / 3600
+            for t in trades
+            if t.opened_at is not None and t.closed_at is not None
+        ]
+        return sum(durations) / len(durations) if durations else 0.0
 
 
 def format_backtest_result(result: BacktestResult) -> str:
@@ -476,6 +532,12 @@ def format_backtest_result(result: BacktestResult) -> str:
         f"  Losing          : {result.losing_trades:>10}",
         f"  Still open      : {result.open_trades:>10}",
         f"  Win rate        : {result.win_rate*100:>9.1f}%",
+        f"  Profit factor   : {result.profit_factor:>9.3f}",
+        f"  Expectancy      : ${result.expectancy:>8.2f}",
+        f"  Avg/trade       : {result.avg_return_per_trade_pct:>8.2f}%",
+        f"  Best trade      : ${result.best_trade_pnl:>8.2f}",
+        f"  Worst trade     : ${result.worst_trade_pnl:>8.2f}",
+        f"  Avg duration    : {result.avg_trade_duration_hours:>8.2f}h",
         f"{'='*55}",
     ]
     return "\n".join(lines)
