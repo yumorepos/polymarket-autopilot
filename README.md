@@ -1,397 +1,171 @@
 <div align="center">
 
-# 📈 Polymarket Autopilot
+# Polymarket Autopilot
 
-**An algorithmic paper trading engine for prediction markets**
+**Paper-trading research engine for prediction-market strategies**
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org)
-[![Tests](https://img.shields.io/badge/Tests-55_passing-success?logo=pytest&logoColor=white)](#testing)
-[![Code Style](https://img.shields.io/badge/Code_Style-Ruff-D7FF64?logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
-[![Type Checked](https://img.shields.io/badge/Type_Checked-mypy_strict-blue?logo=python&logoColor=white)](https://mypy-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
-Scan live [Polymarket](https://polymarket.com) prediction markets, evaluate them with pluggable strategies, simulate trades against a virtual portfolio, backtest against collected snapshots, and review performance via CLI + Streamlit dashboard.
-
-[Why this project is interesting](#why-this-project-is-interesting) · [Quick demo](#quick-demo-2-3-minutes) · [Architecture](#architecture) · [Command reference](#command-reference) · [Limitations](#known-limitations)
+[![Tests](https://img.shields.io/badge/Tests-57_passing-success?logo=pytest&logoColor=white)](#validation)
+[![Lint](https://img.shields.io/badge/Lint-Ruff-D7FF64?logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
+[![Types](https://img.shields.io/badge/Types-mypy_strict-blue?logo=python&logoColor=white)](https://mypy-lang.org)
 
 </div>
 
+Polymarket Autopilot is an end-to-end **paper-trading** system for prediction markets: market ingestion, strategy evaluation, risk-constrained execution simulation, backtesting, reporting, and dashboard observability.
+
+> This repository is intentionally paper-trading only. It does not execute real-money orders.
+
 ---
 
-## Why this project is interesting
+## Why this project matters
 
-Prediction markets are one of the most efficient mechanisms for aggregating information — but trading them profitably requires systematic analysis, not gut feeling. **Polymarket Autopilot** is a quantitative paper trading system that lets you develop, test, and deploy trading strategies against real Polymarket data with zero financial risk.
+Prediction markets combine sparse signals, noisy sentiment, and event-driven microstructure. A useful strategy engine therefore needs more than one-off scripts; it needs reproducible data flows, explicit risk controls, and transparent analytics.
 
-Built as a portfolio project to demonstrate:
-- **Quantitative finance concepts** — Kelly criterion sizing, Sharpe ratio, drawdown analysis
-- **Software engineering** — clean architecture, type safety (`mypy --strict`), async I/O, 55+ tests
-- **Systems thinking** — end-to-end pipeline from data ingestion to automated execution and reporting
+This project demonstrates:
+- **Quant mindset**: strategy testing under constraints, benchmark context, attribution, and realistic caveats.
+- **Engineering discipline**: strict typing, linted code, CI checks, deterministic demo mode, and regression tests.
+- **Product quality**: clean CLI, dashboard UX, and onboarding flow optimized for demos/interviews.
 
+## What makes this different from a toy bot
 
-## Paper-trading scope
+- Deterministic **offline demo mode** (`demo-setup`, `demo-run`) for recruiter-safe walkthroughs.
+- Strategy leaderboard with **benchmark-relative performance** and deterministic ranking explanations.
+- Dashboard with **strategy attribution** and portfolio context, not just raw P&L.
+- Explicit failure-mode handling for network-restricted environments.
+- Clean quality gates (Ruff + mypy + tests) and GitHub Actions CI.
 
-This project is **paper-trading only**. It does not place real-money orders and is intended for strategy research, simulation, and portfolio analytics.
+---
 
-## Features
-
-| | Feature | Description |
-|-|---------|-------------|
-| 🔌 | **Live Market Data** | Async Polymarket CLOB API client with pagination, retry logic, and rate limiting |
-| 🧠 | **Strategy Registry + Metadata** | Discoverable via `polymarket-autopilot strategies`, with risk/holding metadata and configurable parameters |
-| 💰 | **Paper Portfolio** | $10K virtual capital with configurable risk guardrails (max positions/exposure/cash buffer), TP/SL lifecycle, and P&L tracking |
-| 📊 | **Backtesting Engine** | Replay strategies against historical snapshots with Sharpe ratio, max drawdown, and win rate |
-| 📋 | **Daily Reports** | Automated P&L summaries with strategy breakdowns, ready for Telegram delivery |
-| ⏰ | **Cron Automation** | Hands-free trading via included shell scripts — set it and forget it |
-| 🗄️ | **SQLite Persistence** | Trades, portfolio state, and market snapshots stored locally — no external services |
-| 🧪 | **Fully Tested** | 55 tests covering API parsing, database CRUD, strategy signals, portfolio tracking, and backtesting |
-
-## Strategies
-
-All strategies inherit from a common `Strategy` base class with standardized entry/exit signal interfaces. Each uses configurable take-profit, stop-loss, and position sizing parameters.
-
-| # | Strategy | Signal | Risk | Description |
-|---|----------|--------|------|-------------|
-| 1 | **TAIL** | Trend + Volume + Price | Medium | Trend-Following Adaptive Indicator Logic — buys when probability, volume, and price all trend up |
-| 2 | **MARKET_MAKER** | Spread | Low | Earns the bid/ask spread on markets where YES+NO deviates from 1.00 |
-| 3 | **AI_PROBABILITY** | VWAP Divergence | Medium | Compares market price to volume-weighted fair value; trades when divergence exceeds 15% |
-| 4 | **CORRELATION** | Arbitrage | Low | Exploits logical pricing inconsistencies (YES + NO ≠ 1.00) within a single market |
-| 5 | **MEAN_REVERSION** | Deviation from Mean | Medium | Fades sharp overreactions — buys when price drops >20% from rolling average |
-| 6 | **MOMENTUM** | Directional Move + Volume | Med-High | Rides strong directional moves (>10%) confirmed by increasing volume |
-| 7 | **VOLATILITY** | Pre-Catalyst Uncertainty | High | Targets uncertain markets (30–70% range) approaching resolution date |
-| 8 | **WHALE_FOLLOW** | Volume Spike | Medium | Detects 3x+ volume spikes (whale activity) and follows the price direction |
-| 9 | **NEWS_MOMENTUM** | Price Jump | Med-High | Rides sudden price jumps (>15% between snapshots) confirmed by volume |
-| 10 | **CONTRARIAN** | Extreme Fear | Med-High | Buys when price drops >25% from average — buying fear, selling greed |
-
-## Architecture
-
-```
-polymarket-autopilot/
-├── src/polymarket_autopilot/
-│   ├── api.py               # Async Polymarket CLOB client (httpx)
-│   ├── strategies.py        # Strategy base class + 10 implementations
-│   ├── db.py                # SQLite layer — trades, portfolio, snapshots
-│   ├── portfolio.py         # Portfolio analytics & performance metrics
-│   ├── backtest.py          # Backtesting engine with Sharpe/drawdown
-│   ├── report_generator.py  # Daily P&L report builder
-│   └── cli.py               # Click CLI — init/scan/trade/report/history/backtest
-├── tests/                   # 55 tests (pytest)
-├── scripts/
-│   ├── auto_trade.sh        # Cron-ready automated trade cycle
-│   └── collect_snapshots.py # Historical data collector
-├── pyproject.toml           # Project config, dependencies, tool settings
-└── .env.example             # Environment configuration template
-```
-
-### Data Flow
-
-```
-Polymarket CLOB API
-        │
-        ▼
-    api.py ──── Market objects ────► strategies.py
-        │                                  │
-        │  (snapshots)               TradeSignal / ExitSignal
-        ▼                                  │
-     db.py ◄──────────────────────────────┘
-        │                                  │
-        ▼                                  ▼
-  portfolio.py ──► CLI report     backtest.py ──► performance metrics
-```
-
-## Getting Started
-
-### Prerequisites
-
-- **Python 3.12+**
-- [`uv`](https://github.com/astral-sh/uv) (recommended) or `pip`
-
-### Installation
+## Quick demo in 60 seconds
 
 ```bash
-# Clone the repository
-git clone https://github.com/yumorepos/polymarket-autopilot.git
-cd polymarket-autopilot
-
-# Create venv and install (with uv — recommended)
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-
-# Or with pip
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-```
 
-### Configuration
+# one-command deterministic demo
+polymarket-autopilot demo-run --days 30 --top 5
 
-```bash
-cp .env.example .env
-# Edit .env — all settings have sensible defaults
-```
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTOPILOT_DB` | `data/autopilot.db` | SQLite database path |
-| `LOG_LEVEL` | `WARNING` | Logging verbosity (`DEBUG` \| `INFO` \| `WARNING` \| `ERROR`) |
-| `AUTOPILOT_RATE_LIMIT_SLEEP` | `1.0` | API rate-limit pause (seconds) |
-
-## Reproducible demo mode
-
-Use demo mode when you want a deterministic, offline walkthrough without live API access.
-
-```bash
-# load deterministic snapshots + trades into your local DB
-polymarket-autopilot demo-setup
-
-# run ranked strategy comparison over demo data
-polymarket-autopilot compare --days 30
-
-# inspect portfolio and dashboard
-polymarket-autopilot report
+# optional: interactive dashboard
 streamlit run dashboard.py
 ```
 
-Demo mode does **not** change live trading commands; it only seeds local SQLite state for demos and testing.
+Recommended demo story:
+1. `demo-run` (shows setup + ranked comparison + portfolio snapshot)
+2. `report` (portfolio details)
+3. dashboard (attribution + positions + equity)
 
-## Usage
+---
 
-### Initialize the database
+## Reproducible demo mode
 
-```bash
-polymarket-autopilot init
-# Database initialised at: data/autopilot.db
-# Starting cash balance:   $10,000.00
-```
-
-### List available strategies
+Use demo mode when live API access is unavailable or when you want a repeatable interview walkthrough.
 
 ```bash
-polymarket-autopilot strategies
-```
+# seed deterministic snapshots + trades
+polymarket-autopilot demo-setup
 
-### Scan markets for signals
+# compare strategy performance with benchmark context
+polymarket-autopilot compare --days 30 --top 5
 
-```bash
-# Scan with default strategy (TAIL)
-polymarket-autopilot scan
-
-# Scan with a specific strategy
-polymarket-autopilot scan --strategy MOMENTUM --max-pages 5
-
-# Scan with all strategies
-polymarket-autopilot scan --strategy all
-```
-
-### Execute a trade cycle
-
-```bash
-# Run a full trade cycle (open + close positions)
-polymarket-autopilot trade
-
-# Preview signals without committing trades
-polymarket-autopilot trade --dry-run
-
-# Trade with a specific strategy
-polymarket-autopilot trade --strategy WHALE_FOLLOW
-```
-
-
-
-### Risk controls in live paper trading
-
-The `trade` command now supports portfolio guardrails:
-
-```bash
-polymarket-autopilot trade \
-  --max-positions 12 \
-  --max-exposure-market 800 \
-  --max-exposure-strategy 2500 \
-  --max-trade-cost 400 \
-  --cash-buffer 1000
-```
-
-Signals that violate limits are skipped with explicit reason codes (`max_positions_reached`, `market_exposure_limit`, `cash_buffer_breach`, etc.).
-
-### View portfolio report
-
-```bash
+# portfolio + history views
 polymarket-autopilot report
+polymarket-autopilot history --limit 20
 ```
 
-```
-==================================================
-  PORTFOLIO REPORT
-==================================================
-  Starting capital :  $10,000.00
-  Cash             :   $9,412.50
-  Open positions   :          3  (cost: $587.50)
-  Total value      :  $10,000.00
-  Total return     :      +0.00%
-  Realised P&L     :      +$0.00
-  Closed trades    :          0
-  Win rate         :       0.0%
-==================================================
+Demo assets live in:
+- `demo/sample_snapshots.csv`
+- `demo/sample_trades.json`
+
+---
+
+## Architecture (concise)
+
+```text
+Polymarket / Demo Data
+        │
+        ▼
+api.py + demo.py  ──► strategies.py (signals, rationale)
+        │                    │
+        ▼                    ▼
+      db.py  ◄────── cli.py (scan/trade/report/backtest/compare)
+        │
+        ├──► backtest.py (metrics, benchmark, ranking explanations)
+        ├──► portfolio.py / report_generator.py
+        └──► dashboard.py (equity, attribution, open/closed views)
 ```
 
-### View trade history
-
-```bash
-polymarket-autopilot history
-polymarket-autopilot history --limit 50 --offset 0
-```
-
-### Global options
-
-```bash
-# Custom database path + debug logging
-polymarket-autopilot --db /path/to/custom.db --log-level DEBUG report
-```
+---
 
 ## Command reference
 
 | Command | Purpose | Typical use |
 |---|---|---|
 | `polymarket-autopilot init` | Initialize SQLite portfolio state | first run |
-| `polymarket-autopilot demo-setup` | Seed deterministic offline demo data | recruiter/demo walkthrough |
-| `polymarket-autopilot strategies` | List registered strategies with metadata | discover strategy universe |
-| `polymarket-autopilot scan` | Fetch active markets and generate signals | live paper scan |
-| `polymarket-autopilot trade --dry-run` | Evaluate live trade cycle without DB writes | validate guardrails |
-| `polymarket-autopilot report` | Portfolio snapshot + strategy stats | quick status check |
-| `polymarket-autopilot backtest` | Single-strategy historical replay | strategy evaluation |
-| `polymarket-autopilot compare` | Multi-strategy ranked comparison | interview/demo analytics |
+| `polymarket-autopilot demo-setup` | Seed deterministic offline demo data | reproducible walkthrough |
+| `polymarket-autopilot demo-run` | One-command demo (`setup → compare → snapshot`) | fastest interview path |
+| `polymarket-autopilot strategies` | List strategies + metadata | strategy discovery |
+| `polymarket-autopilot scan` | Fetch live markets and print entry opportunities | live paper scan |
+| `polymarket-autopilot trade --dry-run` | Evaluate live cycle without DB writes | risk/logic validation |
+| `polymarket-autopilot report` | Portfolio summary + strategy stats | status review |
+| `polymarket-autopilot backtest` | Single-strategy replay | focused evaluation |
+| `polymarket-autopilot compare` | Multi-strategy ranking + benchmark context | analytics/demo |
 | `polymarket-autopilot daily-report` | Markdown report output | automation/cron |
-
-## Backtesting
-
-Replay any strategy against historical market snapshots to evaluate performance before deploying:
-
-```bash
-polymarket-autopilot backtest --strategy TAIL --days 7
-```
-
-```
-=======================================================
-  BACKTEST REPORT: TAIL
-=======================================================
-  Period         : 2026-02-27 → 2026-03-06
-  Starting capital: $ 10,000.00
-  Ending capital  : $ 10,245.00
-  Total return    :     +2.45%
-  Max drawdown    :     -1.20%
-  Sharpe ratio    :      1.340
-  Total trades    :         12
-  Winning         :          8
-  Losing          :          3
-  Still open      :          1
-  Win rate        :      72.7%
-=======================================================
-```
-
-Metrics include: total return, max drawdown, Sharpe ratio, win rate, profit factor, expectancy, average return per trade, best/worst trade, average trade duration, and per-trade detail.
-
-
-## Quick demo (2-3 minutes)
-
-```bash
-# 1) setup
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# 2) initialize + inspect available strategies
-polymarket-autopilot init
-polymarket-autopilot strategies
-
-# 3) run a safe local simulation
-polymarket-autopilot backtest --strategy TAIL --days 7
-polymarket-autopilot report
-
-# 4) launch dashboard
-streamlit run dashboard.py
-```
-
-## Automation
-
-Set up hands-free trading with the included cron script:
-
-```bash
-# Run every 15 minutes during market hours
-*/15 * * * * /path/to/polymarket-autopilot/scripts/auto_trade.sh
-
-# Logs rotate automatically (7-day retention)
-```
-
-## Adding a Custom Strategy
-
-Extend the system by subclassing `Strategy`:
-
-```python
-# src/polymarket_autopilot/strategies.py
-
-class MyStrategy(Strategy):
-    name = "MY_STRATEGY"
-
-    def evaluate(self, market: Market) -> TradeSignal | None:
-        # Your entry logic here
-        ...
-
-# Register it
-STRATEGIES["MY_STRATEGY"] = MyStrategy
-```
-
-Then use it immediately:
-
-```bash
-polymarket-autopilot scan --strategy MY_STRATEGY
-polymarket-autopilot trade --strategy MY_STRATEGY
-```
-
-## Testing
-
-```bash
-# Run full test suite
-pytest
-
-# Verbose output
-pytest -v
-
-# Run specific test module
-pytest tests/test_strategies.py
-
-# With coverage (if installed)
-pytest --cov=polymarket_autopilot
-```
-
-**55 tests** covering:
-- API response parsing and market object construction
-- Database CRUD operations and schema migrations
-- All strategy signal generation and edge cases
-- Portfolio tracking and performance calculations
-- Backtesting engine accuracy
-
-## Tech Stack
-
-- **Python 3.12** — modern syntax, type hints, `match` statements
-- **httpx** — async HTTP client for Polymarket CLOB API
-- **Click** — CLI framework with subcommands and options
-- **SQLite** — zero-config local persistence
-- **pytest** — test suite and regression coverage
-- **Ruff** — fast linting and formatting
-- **mypy (strict)** — full static type checking
-
-## License
-
-[MIT](LICENSE) — use it, learn from it, build on it.
 
 ---
 
-<div align="center">
+## Strategy/analytics highlights
 
-Built by [Yumo](https://github.com/yumorepos) · Feedback and contributions welcome
+- **Explainability layer**: ranked strategy output now includes deterministic rationale per strategy (return vs baseline, Sharpe, drawdown, trade count).
+- **Benchmark context**: strategy comparison reports excess return vs a simple equal-weight YES buy-and-hold baseline over the same snapshot window.
+- **Dashboard attribution**: per-strategy P&L, win rate, contribution %, and concise attribution notes.
 
-</div>
+---
 
+## Dashboard
 
-## Known limitations
+Launch locally:
 
-- Live scan/trade commands depend on outbound network access to Polymarket APIs.
-- Backtests replay local snapshot data and are only as good as the snapshot coverage collected.
-- Local fallback shims for `httpx` and `python-dotenv` are included for restricted environments; in normal development, install dependencies from `pyproject.toml`.
+```bash
+streamlit run dashboard.py
+```
+
+Key sections:
+- KPI cards (value, realized/unrealized, win rate, deployed capital)
+- Equity curve + benchmark context caption
+- Strategy attribution chart + table
+- Open and closed position tables
+
+---
+
+## Validation
+
+```bash
+PYTHONPATH=src ruff check src tests dashboard.py
+PYTHONPATH=src mypy src
+PYTHONPATH=src pytest -q
+```
+
+Current suite: **57 tests**.
+
+---
+
+## Limitations / caveats
+
+- Live `scan`/`trade` depend on outbound connectivity to Polymarket APIs.
+- Backtests are bounded by snapshot quality/coverage; they do not model slippage/fees/order-book depth.
+- Included local compatibility shims (`src/httpx.py`, `src/dotenv/__init__.py`) are for restricted environments; normal development should use declared dependencies.
+
+---
+
+## What I would build next
+
+1. **Walk-forward evaluation** and rolling-window stability diagnostics.
+2. **Execution realism**: configurable spread/slippage/latency models in backtests.
+3. **Richer attribution**: reason-code decomposition at trade lifecycle level (entry/exit contributors).
+4. **Dataset tooling**: snapshot quality checks and scenario packs for stress testing.
+
+---
+
+## License
+
+MIT

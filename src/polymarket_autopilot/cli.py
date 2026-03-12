@@ -130,6 +130,35 @@ def demo_setup(ctx: click.Context) -> None:
     )
 
 
+@cli.command(name="demo-run")
+@click.option(
+    "--days", default=30, show_default=True, type=int, help="Days for strategy comparison."
+)
+@click.option("--top", default=5, show_default=True, type=int, help="Top ranked strategies.")
+@click.pass_context
+def demo_run(ctx: click.Context, days: int, top: int) -> None:
+    """One-command offline demo: setup -> compare -> report."""
+    db = _get_db(ctx.obj["db_path"])
+    loaded = load_demo_data(db)
+    click.echo(
+        "\n🎬 Demo dataset loaded "
+        f"(snapshots={loaded.snapshot_count}, trades={loaded.trade_count})."
+    )
+
+    rows = compare_strategies(db=db, days=days)
+    click.echo("\n📊 Ranked strategy comparison")
+    click.echo(format_strategy_comparison(rows[:top] if top > 0 else rows))
+
+    tracker = PortfolioTracker(db)
+    report = tracker.get_report()
+    click.echo("\n💼 Portfolio snapshot")
+    click.echo(
+        f"Value=${report.total_value:,.2f} | Realized=${report.realised_pnl:+,.2f} | "
+        f"Open positions={report.open_positions} | Win rate={report.win_rate * 100:.1f}%"
+    )
+    click.echo("\nNext: streamlit run dashboard.py")
+
+
 # ---------------------------------------------------------------------------
 # scan
 # ---------------------------------------------------------------------------

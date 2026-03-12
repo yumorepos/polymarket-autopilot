@@ -91,6 +91,9 @@ class StrategyComparisonRow:
     win_rate: float
     total_trades: int
     expectancy: float
+    benchmark_return_pct: float
+    excess_return_pct: float
+    explanation: str
 
 
 def compare_strategies(
@@ -101,9 +104,11 @@ def compare_strategies(
 ) -> list[StrategyComparisonRow]:
     """Run backtests for multiple strategies and return ranked comparison rows."""
     names = strategy_names or sorted(STRATEGIES.keys())
+    benchmark_return_pct = _benchmark_return_pct(db=db, days=days)
     rows: list[StrategyComparisonRow] = []
     for name in names:
         result = Backtester(db, strategy_name=name, starting_capital=capital).run(days=days)
+        excess_return_pct = result.total_return_pct - benchmark_return_pct
         rows.append(
             StrategyComparisonRow(
                 strategy=name,
@@ -113,6 +118,16 @@ def compare_strategies(
                 win_rate=result.win_rate,
                 total_trades=result.total_trades,
                 expectancy=result.expectancy,
+                benchmark_return_pct=benchmark_return_pct,
+                excess_return_pct=excess_return_pct,
+                explanation=_strategy_comparison_explanation(
+                    strategy=name,
+                    total_return_pct=result.total_return_pct,
+                    excess_return_pct=excess_return_pct,
+                    sharpe_ratio=result.sharpe_ratio,
+                    max_drawdown_pct=result.max_drawdown_pct,
+                    total_trades=result.total_trades,
+                ),
             )
         )
     return sorted(rows, key=lambda r: (r.total_return_pct, r.sharpe_ratio), reverse=True)
@@ -123,12 +138,14 @@ def format_strategy_comparison(rows: list[StrategyComparisonRow]) -> str:
         return "No strategy comparison rows to display."
 
     header = (
-        f"{'Strategy':<18} {'Return%':>8} {'Sharpe':>8} {'MaxDD%':>8} "
-        f"{'Win%':>8} {'Trades':>8} {'Expectancy':>11}"
+        f"{'Strategy':<18} {'Return%':>8} {'Excess%':>8} {'Sharpe':>8} "
+        f"{'MaxDD%':>8} {'Win%':>8} {'Trades':>8} {'Expectancy':>11}"
     )
+    benchmark_return = rows[0].benchmark_return_pct
     lines = [
         "=" * len(header),
         "STRATEGY COMPARISON (ranked by return, then Sharpe)",
+        f"Benchmark: Equal-weight YES-hold across demo markets = {benchmark_return:.2f}%",
         "=" * len(header),
         header,
         "-" * len(header),
@@ -137,14 +154,66 @@ def format_strategy_comparison(rows: list[StrategyComparisonRow]) -> str:
         lines.append(
             f"{row.strategy:<18} "
             f"{row.total_return_pct:>8.2f} "
+            f"{row.excess_return_pct:>8.2f} "
             f"{row.sharpe_ratio:>8.3f} "
             f"{row.max_drawdown_pct:>8.2f} "
             f"{row.win_rate * 100:>8.1f} "
             f"{row.total_trades:>8d} "
             f"{row.expectancy:>11.2f}"
         )
+        lines.append(f"  ↳ {row.explanation}")
     lines.append("=" * len(header))
     return "\n".join(lines)
+
+
+def _benchmark_return_pct(db: Database, days: int) -> float:
+    """Simple baseline: equal-weight YES buy-and-hold over snapshot window."""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    with db._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT condition_id, yes_price, recorded_at
+            FROM market_snapshots
+            WHERE recorded_at >= ? AND recorded_at <= ?
+            ORDER BY condition_id, recorded_at
+            """,
+            (start.isoformat(), now.isoformat()),
+        ).fetchall()
+
+    if not rows:
+        return 0.0
+
+    by_market: dict[str, list[float]] = {}
+    for row in rows:
+        by_market.setdefault(str(row[0]), []).append(float(row[1]))
+
+    returns: list[float] = []
+    for prices in by_market.values():
+        if len(prices) < 2 or prices[0] <= 0:
+            continue
+        returns.append((prices[-1] - prices[0]) / prices[0] * 100)
+    return sum(returns) / len(returns) if returns else 0.0
+
+
+def _strategy_comparison_explanation(
+    strategy: str,
+    total_return_pct: float,
+    excess_return_pct: float,
+    sharpe_ratio: float,
+    max_drawdown_pct: float,
+    total_trades: int,
+) -> str:
+    """Deterministic rationale for why a strategy ranks where it does."""
+    if total_trades == 0:
+        return f"{strategy} produced no trades in this window; ranking reflects inactivity."
+
+    edge = "outperformed" if excess_return_pct >= 0 else "underperformed"
+    return (
+        f"{strategy} {edge} baseline by {excess_return_pct:+.2f}%. "
+        f"Sharpe={sharpe_ratio:.2f}, MaxDD={max_drawdown_pct:.2f}%, Trades={total_trades}."
+    )
+
 
 # ---------------------------------------------------------------------------
 # In-memory portfolio for backtest isolation

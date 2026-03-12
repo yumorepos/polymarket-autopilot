@@ -307,7 +307,30 @@ def _strategy_attribution(trades_df: pd.DataFrame) -> pd.DataFrame:
         grouped["total_pnl"] / total_abs * 100 if total_abs > 0 else 0.0
     )
     grouped["win_rate"] = grouped["win_rate"] * 100
+    grouped["explainability_note"] = grouped.apply(
+        lambda row: (
+            f"{row['strategy']} contributed ${row['total_pnl']:+.2f} over "
+            f"{int(row['trades'])} trades with {row['win_rate']:.1f}% wins."
+        ),
+        axis=1,
+    )
     return grouped.sort_values("total_pnl", ascending=False)
+
+
+def _snapshot_benchmark_return_pct(snapshots_df: pd.DataFrame) -> float:
+    """Baseline context: equal-weight YES buy-and-hold across tracked markets."""
+    if snapshots_df.empty:
+        return 0.0
+
+    returns: list[float] = []
+    for _, group in snapshots_df.groupby("condition_id"):
+        ordered = group.sort_values("recorded_at")
+        first = float(ordered.iloc[0]["yes_price"])
+        last = float(ordered.iloc[-1]["yes_price"])
+        if first <= 0:
+            continue
+        returns.append((last - first) / first * 100)
+    return sum(returns) / len(returns) if returns else 0.0
 
 
 def _render_strategy_attribution(trades_df: pd.DataFrame) -> None:
@@ -344,6 +367,7 @@ def _render_strategy_attribution(trades_df: pd.DataFrame) -> None:
             "trades": "Trades",
             "win_rate": "Win Rate %",
             "pnl_contribution_pct": "PnL Contribution %",
+            "explainability_note": "Why this strategy ranks here",
         }
     )
     st.dataframe(table, use_container_width=True, height=220)
@@ -418,6 +442,11 @@ def main() -> None:
 
     st.markdown("---")
     st.subheader("📈 Equity Curve")
+    benchmark_return = _snapshot_benchmark_return_pct(snapshots_df)
+    st.caption(
+        "Benchmark context: equal-weight YES buy-and-hold across tracked markets = "
+        f"{benchmark_return:.2f}% over the current snapshot window."
+    )
     equity_df = calculate_portfolio_value_over_time(trades_df, snapshots_df)
     if not equity_df.empty:
         fig = go.Figure()
