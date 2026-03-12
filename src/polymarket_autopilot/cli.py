@@ -26,6 +26,7 @@ from polymarket_autopilot.portfolio import PortfolioTracker
 from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
 from polymarket_autopilot.backtest import Backtester, format_backtest_result
 from polymarket_autopilot.report_generator import generate_daily_report
+from polymarket_autopilot.risk import RiskConfig, check_entry_risk
 
 load_dotenv()
 
@@ -103,11 +104,14 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
 
     strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
     strategies = [get_strategy(name, db) for name in strategy_names]
-
     async def _run() -> None:
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets (up to {max_pages} pages)…")
-            markets = await client.get_all_active_markets(max_pages=max_pages)
+            try:
+                markets = await client.get_all_active_markets(max_pages=max_pages)
+            except Exception as exc:
+                click.echo(f"Market fetch failed: {exc}")
+                return
             click.echo(f"Found {len(markets)} active markets.")
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
@@ -164,18 +168,44 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
               help="Strategy to run (or 'all' for all strategies).")
 @click.option("--max-pages", default=3, show_default=True, help="Max API pages to fetch.")
 @click.option("--dry-run", is_flag=True, help="Show what would be traded without executing.")
+@click.option("--max-positions", default=12, show_default=True, type=int, help="Max concurrent open positions.")
+@click.option("--max-exposure-market", default=800.0, show_default=True, type=float, help="Max USD exposure per market.")
+@click.option("--max-exposure-strategy", default=2500.0, show_default=True, type=float, help="Max USD exposure per strategy.")
+@click.option("--max-trade-cost", default=400.0, show_default=True, type=float, help="Max USD allocated per trade.")
+@click.option("--cash-buffer", default=1000.0, show_default=True, type=float, help="Minimum cash that must remain after a trade.")
 @click.pass_context
-def trade(ctx: click.Context, strategy: str, max_pages: int, dry_run: bool) -> None:
+def trade(
+    ctx: click.Context,
+    strategy: str,
+    max_pages: int,
+    dry_run: bool,
+    max_positions: int,
+    max_exposure_market: float,
+    max_exposure_strategy: float,
+    max_trade_cost: float,
+    cash_buffer: float,
+) -> None:
     """Run a full scan-and-trade cycle: record snapshots, open/close positions."""
     db = _get_db(ctx.obj["db_path"])
 
     strategy_names = list(STRATEGIES.keys()) if strategy.upper() == "ALL" else [strategy]
     strategies = [get_strategy(name, db) for name in strategy_names]
+    risk = RiskConfig(
+        max_positions=max_positions,
+        max_exposure_per_market=max_exposure_market,
+        max_exposure_per_strategy=max_exposure_strategy,
+        max_trade_cost=max_trade_cost,
+        min_cash_buffer=cash_buffer,
+    )
 
     async def _run() -> None:
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets…")
-            markets = await client.get_all_active_markets(max_pages=max_pages)
+            try:
+                markets = await client.get_all_active_markets(max_pages=max_pages)
+            except Exception as exc:
+                click.echo(f"Market fetch failed: {exc}")
+                return
             click.echo(f"{len(markets)} active markets fetched.")
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
@@ -221,6 +251,13 @@ def trade(ctx: click.Context, strategy: str, max_pages: int, dry_run: bool) -> N
                         continue
                     trade_obj = signal_to_trade(signal)
                     cost = trade_obj.shares * trade_obj.entry_price
+
+                    decision = check_entry_risk(db, signal, risk)
+                    if not decision.allowed:
+                        click.echo(
+                            f"[SKIP] [{strat.name}] {signal.question[:50]} -> {decision.reason}"
+                        )
+                        continue
 
                     if dry_run:
                         click.echo(

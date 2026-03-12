@@ -9,12 +9,44 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+def _coerce_json_list(value: Any) -> list[Any]:
+    """Coerce a raw value into a list, handling JSON-encoded strings."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        import json
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return decoded if isinstance(decoded, list) else []
+    return []
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Parse numeric values defensively."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_price(value: Any) -> float:
+    """Normalize potentially malformed market prices into [0, 1]."""
+    price = _safe_float(value, 0.0)
+    if price < 0:
+        return 0.0
+    if price > 1:
+        return 1.0
+    return price
+
 
 CLOB_BASE_URL = "https://clob.polymarket.com"
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
@@ -260,27 +292,20 @@ def _parse_market(raw: dict[str, Any]) -> Market:
             outcomes.append(
                 Outcome(
                     name=token.get("outcome", ""),
-                    price=float(token.get("price", 0.0)),
+                    price=_normalize_price(token.get("price", 0.0)),
                     token_id=token.get("token_id", ""),
                 )
             )
     else:
         # Gamma API format: separate outcomes and outcomePrices arrays
-        outcome_names = raw.get("outcomes", [])
-        outcome_prices = raw.get("outcomePrices", [])
-        clob_token_ids = raw.get("clobTokenIds", [])
-        if isinstance(outcome_names, str):
-            import json
-            outcome_names = json.loads(outcome_names)
-        if isinstance(outcome_prices, str):
-            import json
-            outcome_prices = json.loads(outcome_prices)
-        if isinstance(clob_token_ids, str):
-            import json
-            clob_token_ids = json.loads(clob_token_ids)
+        outcome_names = _coerce_json_list(raw.get("outcomes", []))
+        outcome_prices = _coerce_json_list(raw.get("outcomePrices", []))
+        clob_token_ids = _coerce_json_list(raw.get("clobTokenIds", []))
         for i, name in enumerate(outcome_names):
-            price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
-            token_id = clob_token_ids[i] if i < len(clob_token_ids) else ""
+            if not isinstance(name, str) or not name:
+                continue
+            price = _normalize_price(outcome_prices[i] if i < len(outcome_prices) else 0.0)
+            token_id = str(clob_token_ids[i]) if i < len(clob_token_ids) else ""
             outcomes.append(Outcome(name=name, price=price, token_id=token_id))
 
     end_date: datetime | None = None
@@ -288,9 +313,8 @@ def _parse_market(raw: dict[str, Any]) -> Market:
     if raw_end:
         try:
             # Ensure timezone-aware datetime (API returns UTC with trailing "Z")
-            parsed = datetime.fromisoformat(raw_end.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(str(raw_end).replace("Z", "+00:00"))
             if parsed.tzinfo is None:
-                from datetime import timezone
                 parsed = parsed.replace(tzinfo=timezone.utc)
             end_date = parsed
         except ValueError:
@@ -298,11 +322,14 @@ def _parse_market(raw: dict[str, Any]) -> Market:
 
     volume_raw = raw.get("volume") or raw.get("volume_num") or 0.0
 
+    condition_id = str(raw.get("condition_id", raw.get("conditionId", "")) or "")
+    question = str(raw.get("question", "") or "")
+
     return Market(
-        condition_id=raw.get("condition_id", raw.get("conditionId", "")),
-        question=raw.get("question", ""),
+        condition_id=condition_id,
+        question=question,
         outcomes=outcomes,
-        volume=float(volume_raw),
+        volume=_safe_float(volume_raw, 0.0),
         end_date=end_date,
         active=bool(raw.get("active", True)),
         closed=bool(raw.get("closed", False)),

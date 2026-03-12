@@ -33,7 +33,7 @@ Built as a portfolio project to demonstrate:
 |-|---------|-------------|
 | 🔌 | **Live Market Data** | Async Polymarket CLOB API client with pagination, retry logic, and rate limiting |
 | 🧠 | **10 Trading Strategies** | From trend-following to contrarian — each with configurable risk parameters |
-| 💰 | **Paper Portfolio** | $10K virtual capital with per-trade TP/SL, position sizing, and P&L tracking |
+| 💰 | **Paper Portfolio** | $10K virtual capital with configurable risk guardrails (max positions/exposure/cash buffer), TP/SL lifecycle, and P&L tracking |
 | 📊 | **Backtesting Engine** | Replay strategies against historical snapshots with Sharpe ratio, max drawdown, and win rate |
 | 📋 | **Daily Reports** | Automated P&L summaries with strategy breakdowns, ready for Telegram delivery |
 | ⏰ | **Cron Automation** | Hands-free trading via included shell scripts — set it and forget it |
@@ -165,6 +165,23 @@ polymarket-autopilot trade --dry-run
 polymarket-autopilot trade --strategy WHALE_FOLLOW
 ```
 
+
+
+### Risk controls in live paper trading
+
+The `trade` command now supports portfolio guardrails:
+
+```bash
+polymarket-autopilot trade \
+  --max-positions 12 \
+  --max-exposure-market 800 \
+  --max-exposure-strategy 2500 \
+  --max-trade-cost 400 \
+  --cash-buffer 1000
+```
+
+Signals that violate limits are skipped with explicit reason codes (`max_positions_reached`, `market_exposure_limit`, `cash_buffer_breach`, etc.).
+
 ### View portfolio report
 
 ```bash
@@ -226,7 +243,7 @@ polymarket-autopilot backtest --strategy TAIL --days 7
 =======================================================
 ```
 
-Metrics include: total return, max drawdown, Sharpe ratio, win rate, and per-trade detail.
+Metrics include: total return, max drawdown, Sharpe ratio, win rate, profit factor, expectancy, average return per trade, best/worst trade, average trade duration, and per-trade detail.
 
 ## Automation
 
