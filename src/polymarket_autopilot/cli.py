@@ -12,16 +12,14 @@ history   — Show trade history (open + closed).
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import click
-
-try:
-    from dotenv import load_dotenv  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - fallback for restricted envs
-    from polymarket_autopilot.dotenv_compat import load_dotenv
 
 from polymarket_autopilot.api import PolymarketAPIError, PolymarketClient
 from polymarket_autopilot.backtest import (
@@ -43,6 +41,18 @@ from polymarket_autopilot.strategies import (
     signal_to_trade,
 )
 
+
+def _resolve_load_dotenv() -> Callable[..., bool]:
+    try:
+        dotenv_module = importlib.import_module("dotenv")
+        return cast(Callable[..., bool], dotenv_module.load_dotenv)
+    except ImportError:  # pragma: no cover - fallback for restricted envs
+        from polymarket_autopilot.dotenv_compat import load_dotenv
+
+        return load_dotenv
+
+
+load_dotenv = _resolve_load_dotenv()
 load_dotenv()
 
 # ---------------------------------------------------------------------------

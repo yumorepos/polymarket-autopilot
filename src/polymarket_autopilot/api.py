@@ -7,6 +7,7 @@ market data used by the strategy engine.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import random
 from dataclasses import dataclass
@@ -14,9 +15,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:
-    import httpx  # type: ignore[import-not-found]
+    httpx = importlib.import_module("httpx")
 except ImportError:  # pragma: no cover - fallback for restricted envs
-    from polymarket_autopilot import httpx_compat as httpx
+    from polymarket_autopilot import httpx_compat
+
+    httpx = httpx_compat
 
 logger = logging.getLogger(__name__)
 
