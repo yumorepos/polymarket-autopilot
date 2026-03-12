@@ -186,6 +186,17 @@ class Database:
             else 0.0,
         }
 
+
+    def reset(self) -> None:
+        """Reset portfolio, trades, and snapshots for reproducible demo runs."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM paper_trades")
+            conn.execute("DELETE FROM market_snapshots")
+            conn.execute(
+                "UPDATE portfolio SET cash = ?, updated_at = ? WHERE id = 1",
+                (STARTING_CAPITAL, _now()),
+            )
+
     # ------------------------------------------------------------------
     # Trades
     # ------------------------------------------------------------------
@@ -229,7 +240,13 @@ class Database:
             )
         return trade_id
 
-    def close_trade(self, trade_id: int, exit_price: float, status: str) -> PaperTrade | None:
+    def close_trade(
+        self,
+        trade_id: int,
+        exit_price: float,
+        status: str,
+        closed_at: datetime | None = None,
+    ) -> PaperTrade | None:
         """Close an open trade and credit proceeds to cash.
 
         Args:
@@ -259,7 +276,7 @@ class Database:
                 SET exit_price = ?, status = ?, pnl = ?, closed_at = ?
                 WHERE id = ?
                 """,
-                (exit_price, status, pnl, _now(), trade_id),
+                (exit_price, status, pnl, _fmt(closed_at) if closed_at else _now(), trade_id),
             )
             conn.execute(
                 "UPDATE portfolio SET cash = cash + ?, updated_at = ? WHERE id = 1",

@@ -12,13 +12,13 @@
 
 Scan live [Polymarket](https://polymarket.com) prediction markets, evaluate them with pluggable strategies, simulate trades against a virtual portfolio, backtest against collected snapshots, and review performance via CLI + Streamlit dashboard.
 
-[Features](#features) · [Strategies](#strategies) · [Architecture](#architecture) · [Getting Started](#getting-started) · [Usage](#usage) · [Backtesting](#backtesting) · [Contributing](#contributing)
+[Why this project is interesting](#why-this-project-is-interesting) · [Quick demo](#quick-demo-2-3-minutes) · [Architecture](#architecture) · [Command reference](#command-reference) · [Limitations](#known-limitations)
 
 </div>
 
 ---
 
-## Why This Exists
+## Why this project is interesting
 
 Prediction markets are one of the most efficient mechanisms for aggregating information — but trading them profitably requires systematic analysis, not gut feeling. **Polymarket Autopilot** is a quantitative paper trading system that lets you develop, test, and deploy trading strategies against real Polymarket data with zero financial risk.
 
@@ -134,6 +134,24 @@ cp .env.example .env
 | `LOG_LEVEL` | `WARNING` | Logging verbosity (`DEBUG` \| `INFO` \| `WARNING` \| `ERROR`) |
 | `AUTOPILOT_RATE_LIMIT_SLEEP` | `1.0` | API rate-limit pause (seconds) |
 
+## Reproducible demo mode
+
+Use demo mode when you want a deterministic, offline walkthrough without live API access.
+
+```bash
+# load deterministic snapshots + trades into your local DB
+polymarket-autopilot demo-setup
+
+# run ranked strategy comparison over demo data
+polymarket-autopilot compare --days 30
+
+# inspect portfolio and dashboard
+polymarket-autopilot report
+streamlit run dashboard.py
+```
+
+Demo mode does **not** change live trading commands; it only seeds local SQLite state for demos and testing.
+
 ## Usage
 
 ### Initialize the database
@@ -227,6 +245,20 @@ polymarket-autopilot history --limit 50 --offset 0
 # Custom database path + debug logging
 polymarket-autopilot --db /path/to/custom.db --log-level DEBUG report
 ```
+
+## Command reference
+
+| Command | Purpose | Typical use |
+|---|---|---|
+| `polymarket-autopilot init` | Initialize SQLite portfolio state | first run |
+| `polymarket-autopilot demo-setup` | Seed deterministic offline demo data | recruiter/demo walkthrough |
+| `polymarket-autopilot strategies` | List registered strategies with metadata | discover strategy universe |
+| `polymarket-autopilot scan` | Fetch active markets and generate signals | live paper scan |
+| `polymarket-autopilot trade --dry-run` | Evaluate live trade cycle without DB writes | validate guardrails |
+| `polymarket-autopilot report` | Portfolio snapshot + strategy stats | quick status check |
+| `polymarket-autopilot backtest` | Single-strategy historical replay | strategy evaluation |
+| `polymarket-autopilot compare` | Multi-strategy ranked comparison | interview/demo analytics |
+| `polymarket-autopilot daily-report` | Markdown report output | automation/cron |
 
 ## Backtesting
 
@@ -341,7 +373,7 @@ pytest --cov=polymarket_autopilot
 - **httpx** — async HTTP client for Polymarket CLOB API
 - **Click** — CLI framework with subcommands and options
 - **SQLite** — zero-config local persistence
-- **pytest** + **pytest-asyncio** — async-aware test suite
+- **pytest** — test suite and regression coverage
 - **Ruff** — fast linting and formatting
 - **mypy (strict)** — full static type checking
 

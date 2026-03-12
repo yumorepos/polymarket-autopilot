@@ -288,6 +288,67 @@ def _build_closed_trades_table(trades_df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def _strategy_attribution(trades_df: pd.DataFrame) -> pd.DataFrame:
+    closed = trades_df[trades_df["status"].isin(CLOSED_STATUSES)].copy()
+    if closed.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        closed.groupby("strategy")
+        .agg(
+            total_pnl=("pnl", "sum"),
+            trades=("pnl", "count"),
+            win_rate=("pnl", lambda x: (x > 0).mean()),
+        )
+        .reset_index()
+    )
+    total_abs = grouped["total_pnl"].abs().sum()
+    grouped["pnl_contribution_pct"] = (
+        grouped["total_pnl"] / total_abs * 100 if total_abs > 0 else 0.0
+    )
+    grouped["win_rate"] = grouped["win_rate"] * 100
+    return grouped.sort_values("total_pnl", ascending=False)
+
+
+def _render_strategy_attribution(trades_df: pd.DataFrame) -> None:
+    st.subheader("🧠 Strategy Attribution")
+    attribution = _strategy_attribution(trades_df)
+    if attribution.empty:
+        st.info("No closed trades available for strategy attribution yet")
+        return
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=attribution["strategy"],
+            y=attribution["total_pnl"],
+            text=attribution["total_pnl"].map(lambda x: f"${x:,.2f}"),
+            textposition="outside",
+            marker_color=["#00D9FF" if x >= 0 else "#FF6B6B" for x in attribution["total_pnl"]],
+            name="Total P&L",
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_title="Strategy",
+        yaxis_title="Total P&L ($)",
+        height=320,
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    table = attribution.rename(
+        columns={
+            "strategy": "Strategy",
+            "total_pnl": "Total P&L",
+            "trades": "Trades",
+            "win_rate": "Win Rate %",
+            "pnl_contribution_pct": "PnL Contribution %",
+        }
+    )
+    st.dataframe(table, use_container_width=True, height=220)
+
+
 def _render_kpis(metrics: DashboardMetrics) -> None:
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
@@ -387,6 +448,9 @@ def main() -> None:
             height=400,
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    _render_strategy_attribution(trades_df)
 
     st.markdown("---")
     st.subheader("📊 Open Positions")

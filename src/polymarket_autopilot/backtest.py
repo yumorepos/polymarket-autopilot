@@ -82,6 +82,70 @@ class BacktestResult:
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
+@dataclass
+class StrategyComparisonRow:
+    strategy: str
+    total_return_pct: float
+    sharpe_ratio: float
+    max_drawdown_pct: float
+    win_rate: float
+    total_trades: int
+    expectancy: float
+
+
+def compare_strategies(
+    db: Database,
+    days: int = 7,
+    capital: float = 10_000.0,
+    strategy_names: list[str] | None = None,
+) -> list[StrategyComparisonRow]:
+    """Run backtests for multiple strategies and return ranked comparison rows."""
+    names = strategy_names or sorted(STRATEGIES.keys())
+    rows: list[StrategyComparisonRow] = []
+    for name in names:
+        result = Backtester(db, strategy_name=name, starting_capital=capital).run(days=days)
+        rows.append(
+            StrategyComparisonRow(
+                strategy=name,
+                total_return_pct=result.total_return_pct,
+                sharpe_ratio=result.sharpe_ratio,
+                max_drawdown_pct=result.max_drawdown_pct,
+                win_rate=result.win_rate,
+                total_trades=result.total_trades,
+                expectancy=result.expectancy,
+            )
+        )
+    return sorted(rows, key=lambda r: (r.total_return_pct, r.sharpe_ratio), reverse=True)
+
+
+def format_strategy_comparison(rows: list[StrategyComparisonRow]) -> str:
+    if not rows:
+        return "No strategy comparison rows to display."
+
+    header = (
+        f"{'Strategy':<18} {'Return%':>8} {'Sharpe':>8} {'MaxDD%':>8} "
+        f"{'Win%':>8} {'Trades':>8} {'Expectancy':>11}"
+    )
+    lines = [
+        "=" * len(header),
+        "STRATEGY COMPARISON (ranked by return, then Sharpe)",
+        "=" * len(header),
+        header,
+        "-" * len(header),
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.strategy:<18} "
+            f"{row.total_return_pct:>8.2f} "
+            f"{row.sharpe_ratio:>8.3f} "
+            f"{row.max_drawdown_pct:>8.2f} "
+            f"{row.win_rate * 100:>8.1f} "
+            f"{row.total_trades:>8d} "
+            f"{row.expectancy:>11.2f}"
+        )
+    lines.append("=" * len(header))
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------------
 # In-memory portfolio for backtest isolation
 # ---------------------------------------------------------------------------

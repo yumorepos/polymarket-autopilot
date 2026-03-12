@@ -20,8 +20,14 @@ import click
 
 from dotenv import load_dotenv
 from polymarket_autopilot.api import PolymarketAPIError, PolymarketClient
-from polymarket_autopilot.backtest import Backtester, format_backtest_result
+from polymarket_autopilot.backtest import (
+    Backtester,
+    compare_strategies,
+    format_backtest_result,
+    format_strategy_comparison,
+)
 from polymarket_autopilot.db import DEFAULT_DB_PATH, Database, MarketSnapshot
+from polymarket_autopilot.demo import load_demo_data
 from polymarket_autopilot.portfolio import PortfolioTracker
 from polymarket_autopilot.report_generator import generate_daily_report
 from polymarket_autopilot.risk import RiskConfig, check_entry_risk
@@ -109,6 +115,19 @@ def init(ctx: click.Context) -> None:
     cash = db.get_cash()
     click.echo(f"Database initialised at: {ctx.obj['db_path']}")
     click.echo(f"Starting cash balance:   ${cash:,.2f}")
+
+
+@cli.command(name="demo-setup")
+@click.pass_context
+def demo_setup(ctx: click.Context) -> None:
+    """Load deterministic offline demo data into the configured database."""
+    db = _get_db(ctx.obj["db_path"])
+    result = load_demo_data(db)
+    click.echo(f"Demo data loaded into: {ctx.obj['db_path']}")
+    click.echo(
+        f"Snapshots: {result.snapshot_count} | Trades: {result.trade_count} "
+        f"(closed={result.closed_trade_count}, open={result.open_trade_count})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +485,30 @@ def backtest(ctx: click.Context, strategy: str, days: int, capital: float) -> No
     bt = Backtester(db, strategy_name=strategy, starting_capital=capital)
     result = bt.run(days=days)
     click.echo(format_backtest_result(result))
+
+
+@cli.command(name="compare")
+@click.option(
+    "--days", default=7, show_default=True, type=int, help="Days of snapshots to compare."
+)
+@click.option(
+    "--capital", default=10_000.0, show_default=True, type=float, help="Starting capital."
+)
+@click.option(
+    "--top",
+    default=10,
+    show_default=True,
+    type=int,
+    help="Show top N ranked strategies (use 0 for all).",
+)
+@click.pass_context
+def compare(ctx: click.Context, days: int, capital: float, top: int) -> None:
+    """Run multi-strategy backtest comparison and print a ranked leaderboard."""
+    db = _get_db(ctx.obj["db_path"])
+    rows = compare_strategies(db=db, days=days, capital=capital)
+    if top > 0:
+        rows = rows[:top]
+    click.echo(format_strategy_comparison(rows))
 
 
 # ---------------------------------------------------------------------------
