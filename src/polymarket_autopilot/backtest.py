@@ -218,14 +218,12 @@ class Backtester:
         self.starting_capital = starting_capital
 
     def run(self, days: int = 7) -> BacktestResult:
-        """Run the backtest over the specified period.
+        return self.run_with_overrides(days=days, overrides=None)
 
-        Args:
-            days: Number of days of history to replay.
-
-        Returns:
-            BacktestResult with performance metrics.
-        """
+    def run_with_overrides(
+        self, days: int = 7, overrides: dict[str, float | int] | None = None
+    ) -> BacktestResult:
+        """Run the backtest over the specified period with optional parameter overrides."""
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
 
@@ -248,7 +246,8 @@ class Backtester:
         )
         strategies: list[Strategy] = []
         for name in strategy_names:
-            strategies.append(get_strategy(name, portfolio))  # type: ignore[arg-type]
+            params = overrides or {}
+            strategies.append(get_strategy(name, portfolio, **params))  # type: ignore[arg-type]
 
         closed_trades: list[BacktestTrade] = []
         portfolio_values: list[float] = [self.starting_capital]

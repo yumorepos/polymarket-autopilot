@@ -9,7 +9,7 @@ import pytest
 
 from polymarket_autopilot.api import Market, Outcome
 from polymarket_autopilot.db import Database, MarketSnapshot, STARTING_CAPITAL
-from polymarket_autopilot.strategies import TailStrategy, get_strategy
+from polymarket_autopilot.strategies import TailStrategy, get_strategy, strategy_catalog
 
 
 @pytest.fixture()
@@ -151,3 +151,11 @@ class TestTailStrategy:
     def test_get_strategy_invalid_raises(self, db: Database) -> None:
         with pytest.raises(ValueError, match="Unknown strategy"):
             get_strategy("UNKNOWN", db)
+
+    def test_strategy_catalog_contains_defaults(self) -> None:
+        catalog = strategy_catalog()
+        tail = next(item for item in catalog if item["name"] == "TAIL")
+        assert "summary" in tail
+        params = tail["parameters"]
+        assert isinstance(params, dict)
+        assert params["max_yes_prob"] == 0.2

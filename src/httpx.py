@@ -1,6 +1,7 @@
-"""Minimal local httpx compatibility shim for restricted environments.
+"""Local compatibility shim for environments without external dependencies.
 
-This implements only the subset used by polymarket-autopilot.
+The project normally uses the third-party ``httpx`` package.
+This shim implements only the subset required by this repository's tests/CLI.
 """
 
 from __future__ import annotations

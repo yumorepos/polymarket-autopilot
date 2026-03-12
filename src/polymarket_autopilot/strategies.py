@@ -17,6 +17,7 @@ Provides a base Strategy interface and 10 built-in trading strategies:
 from __future__ import annotations
 
 import logging
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1202,6 +1203,30 @@ def get_strategy(name: str, db: Database, **kwargs: float | int) -> Strategy:
     return cls(db, **kwargs)  # type: ignore[arg-type]
 
 
+def strategy_catalog() -> list[dict[str, object]]:
+    """Return strategy metadata and default tunable parameters."""
+    catalog: list[dict[str, object]] = []
+    for name, cls in STRATEGIES.items():
+        signature = inspect.signature(cls.__init__)
+        defaults: dict[str, float | int | None] = {}
+        for param_name, param in signature.parameters.items():
+            if param_name in {"self", "db"}:
+                continue
+            default = None if param.default is inspect.Parameter.empty else param.default
+            defaults[param_name] = default
+
+        doc = (cls.__doc__ or "").strip().splitlines()
+        summary = doc[0].strip() if doc else "No summary provided."
+        catalog.append(
+            {
+                "name": name,
+                "summary": summary,
+                "parameters": defaults,
+            }
+        )
+    return catalog
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1248,11 +1273,3 @@ def signal_to_trade(signal: TradeSignal) -> PaperTrade:
         opened_at=datetime.now(timezone.utc),
         closed_at=None,
     )
-
-class SIMPLE_MEAN_REVERSAL(Strategy):
-    name = "SIMPLE_MEAN_REVERSAL"
-    def evaluate(self, market) -> TradeSignal | None:
-        # A simple placeholder that does not trade, representing mean-reversion core logic template.
-        return None
-
-STRATEGIES["SIMPLE_MEAN_REVERSAL"] = SIMPLE_MEAN_REVERSAL

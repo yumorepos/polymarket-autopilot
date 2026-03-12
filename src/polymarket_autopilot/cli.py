@@ -23,8 +23,9 @@ from dotenv import load_dotenv
 from polymarket_autopilot.api import PolymarketClient
 from polymarket_autopilot.db import Database, MarketSnapshot, DEFAULT_DB_PATH
 from polymarket_autopilot.portfolio import PortfolioTracker
-from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade
+from polymarket_autopilot.strategies import STRATEGIES, get_strategy, signal_to_trade, strategy_catalog
 from polymarket_autopilot.backtest import Backtester, format_backtest_result
+import json
 from polymarket_autopilot.report_generator import generate_daily_report
 from polymarket_autopilot.risk import RiskConfig, check_entry_risk
 
@@ -108,11 +109,18 @@ def scan(ctx: click.Context, strategy: str, max_pages: int, record: bool) -> Non
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets (up to {max_pages} pages)…")
             try:
-                markets = await client.get_all_active_markets(max_pages=max_pages)
+                markets, stats = await client.get_all_active_markets_with_stats(max_pages=max_pages)
             except Exception as exc:
                 click.echo(f"Market fetch failed: {exc}")
                 return
             click.echo(f"Found {len(markets)} active markets.")
+            click.echo(
+                "Data provenance: "
+                f"fetched_at={stats.fetched_at.isoformat()} "
+                f"pages={stats.pages_fetched}/{stats.pages_requested} "
+                f"raw={stats.raw_markets_seen} parsed={stats.parsed_markets} "
+                f"filtered={stats.filtered_inactive}"
+            )
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
             # Record snapshots first
@@ -202,11 +210,18 @@ def trade(
         async with PolymarketClient() as client:
             click.echo(f"Fetching markets…")
             try:
-                markets = await client.get_all_active_markets(max_pages=max_pages)
+                markets, stats = await client.get_all_active_markets_with_stats(max_pages=max_pages)
             except Exception as exc:
                 click.echo(f"Market fetch failed: {exc}")
                 return
             click.echo(f"{len(markets)} active markets fetched.")
+            click.echo(
+                "Data provenance: "
+                f"fetched_at={stats.fetched_at.isoformat()} "
+                f"pages={stats.pages_fetched}/{stats.pages_requested} "
+                f"raw={stats.raw_markets_seen} parsed={stats.parsed_markets} "
+                f"filtered={stats.filtered_inactive}"
+            )
             click.echo(f"Running {len(strategies)} strategy(ies): {', '.join(strategy_names)}")
 
             market_map = {m.condition_id: m for m in markets}
@@ -402,6 +417,77 @@ def backtest(ctx: click.Context, strategy: str, days: int, capital: float) -> No
 # daily-report
 # ---------------------------------------------------------------------------
 
+
+
+
+@cli.command(name="strategies")
+def list_strategies() -> None:
+    """List built-in strategies with default tunable parameters."""
+    rows = strategy_catalog()
+    click.echo(f"\n{'='*88}")
+    click.echo("  STRATEGY CATALOG")
+    click.echo(f"{'='*88}")
+    for row in rows:
+        click.echo(f"\n[{row['name']}]")
+        click.echo(f"  Summary   : {row['summary']}")
+        click.echo(f"  Defaults  : {json.dumps(row['parameters'], sort_keys=True)}")
+    click.echo(f"\n{'='*88}\n")
+
+
+@cli.command(name="compare")
+@click.option("--strategies", default="TAIL,MOMENTUM,MEAN_REVERSION", show_default=True,
+              help="Comma-separated strategy names.")
+@click.option("--days", default=7, show_default=True, type=int)
+@click.option("--capital", default=10_000.0, show_default=True, type=float)
+@click.pass_context
+def compare_strategies(ctx: click.Context, strategies: str, days: int, capital: float) -> None:
+    """Backtest multiple strategies and print a compact comparison table."""
+    db = _get_db(ctx.obj["db_path"])
+    selected = [s.strip().upper() for s in strategies.split(",") if s.strip()]
+
+    click.echo(f"\n{'='*110}")
+    click.echo("  STRATEGY COMPARISON")
+    click.echo(f"{'='*110}")
+    click.echo(f"  Period: last {days} day(s) | Starting capital: ${capital:,.2f}")
+    click.echo(f"{'-'*110}")
+    click.echo(f"  {'Strategy':<18} {'Return%':>8} {'Sharpe':>8} {'Win%':>8} {'Trades':>8} {'PF':>8} {'Expectancy':>12}")
+    click.echo(f"{'-'*110}")
+
+    for name in selected:
+        result = Backtester(db, strategy_name=name, starting_capital=capital).run(days=days)
+        click.echo(
+            f"  {name:<18} {result.total_return_pct:>8.2f} {result.sharpe_ratio:>8.3f} "
+            f"{result.win_rate*100:>8.1f} {result.total_trades:>8} {result.profit_factor:>8.3f} {result.expectancy:>12.2f}"
+        )
+    click.echo(f"{'='*110}\n")
+
+
+@cli.command(name="sweep")
+@click.option("--strategy", default="TAIL", show_default=True)
+@click.option("--param", required=True, help="Parameter name to vary (e.g. max_yes_prob).")
+@click.option("--values", required=True, help="Comma-separated numeric values.")
+@click.option("--days", default=7, show_default=True, type=int)
+@click.option("--capital", default=10_000.0, show_default=True, type=float)
+@click.pass_context
+def sweep(ctx: click.Context, strategy: str, param: str, values: str, days: int, capital: float) -> None:
+    """Run a lightweight parameter sweep for one strategy."""
+    db = _get_db(ctx.obj["db_path"])
+    parsed_values = [float(v.strip()) for v in values.split(",") if v.strip()]
+
+    click.echo(f"\n{'='*108}")
+    click.echo(f"  PARAMETER SWEEP: {strategy.upper()} | {param}")
+    click.echo(f"{'='*108}")
+    click.echo(f"  {'Value':>10} {'Return%':>10} {'Sharpe':>8} {'Win%':>8} {'Trades':>8} {'MaxDD%':>9} {'PF':>8}")
+    click.echo(f"{'-'*108}")
+
+    for value in parsed_values:
+        bt = Backtester(db, strategy_name=strategy, starting_capital=capital)
+        result = bt.run_with_overrides(days=days, overrides={param: value})
+        click.echo(
+            f"  {value:>10.4f} {result.total_return_pct:>10.2f} {result.sharpe_ratio:>8.3f} "
+            f"{result.win_rate*100:>8.1f} {result.total_trades:>8} {result.max_drawdown_pct:>9.2f} {result.profit_factor:>8.3f}"
+        )
+    click.echo(f"{'='*108}\n")
 
 @cli.command(name="daily-report")
 @click.pass_context

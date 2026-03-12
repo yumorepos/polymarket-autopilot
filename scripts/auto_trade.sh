@@ -1,24 +1,48 @@
-#!/bin/bash
-# Polymarket Autopilot — automated trade cycle
-# Runs all strategies, logs output
+#!/usr/bin/env bash
+# Polymarket Autopilot — automated trade cycle runner with lock + structured logs
 
 set -euo pipefail
 
-PROJ_DIR="$HOME/Projects/polymarket-autopilot"
-LOG_DIR="$PROJ_DIR/logs"
-VENV="$PROJ_DIR/.venv/bin/activate"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJ_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOG_DIR="${PROJ_DIR}/logs"
+LOCK_DIR="${PROJ_DIR}/.locks"
+LOCK_FILE="${LOCK_DIR}/auto_trade.lock"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="${LOG_DIR}/trade_${RUN_ID}.log"
+MAX_PAGES="${AUTOPILOT_MAX_PAGES:-5}"
+STRATEGY="${AUTOPILOT_STRATEGY:-all}"
 
-mkdir -p "$LOG_DIR"
+mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_FILE="$LOG_DIR/trade_${TIMESTAMP}.log"
+if [[ ! -x "${PROJ_DIR}/.venv/bin/polymarket-autopilot" ]]; then
+  echo "[ERROR] ${PROJ_DIR}/.venv/bin/polymarket-autopilot not found. Activate/install project first." >&2
+  exit 1
+fi
 
-cd "$PROJ_DIR"
-source "$VENV"
+if [[ -e "${LOCK_FILE}" ]]; then
+  lock_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}") ))
+  echo "[WARN] Existing lock detected (${lock_age}s old). Skipping duplicate run." >> "${LOG_FILE}"
+  exit 0
+fi
 
-echo "=== Auto-trade cycle: $(date) ===" >> "$LOG_FILE"
-polymarket-autopilot trade --strategy all --max-pages 5 >> "$LOG_FILE" 2>&1
-echo "=== Completed: $(date) ===" >> "$LOG_FILE"
+cleanup() {
+  rm -f "${LOCK_FILE}" || true
+}
+trap cleanup EXIT
 
-# Keep only last 7 days of logs
-find "$LOG_DIR" -name "trade_*.log" -mtime +7 -delete 2>/dev/null || true
+touch "${LOCK_FILE}"
+
+{
+  echo "=== Auto-trade cycle start (UTC): $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+  echo "Run ID: ${RUN_ID}"
+  echo "Project: ${PROJ_DIR}"
+  echo "Command: polymarket-autopilot trade --strategy ${STRATEGY} --max-pages ${MAX_PAGES}"
+
+  "${PROJ_DIR}/.venv/bin/polymarket-autopilot" trade --strategy "${STRATEGY}" --max-pages "${MAX_PAGES}"
+
+  echo "=== Auto-trade cycle completed (UTC): $(date -u '+%Y-%m-%d %H:%M:%S') ==="
+} >> "${LOG_FILE}" 2>&1
+
+# Keep only last 14 days of logs
+find "${LOG_DIR}" -name "trade_*.log" -mtime +14 -delete 2>/dev/null || true

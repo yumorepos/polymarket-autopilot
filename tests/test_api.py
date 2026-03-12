@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from polymarket_autopilot.api import Market, Outcome, _parse_market
+import asyncio
+
+from polymarket_autopilot.api import Market, Outcome, PolymarketClient, _parse_market
 
 
 class TestParseMarket:
@@ -61,3 +63,42 @@ class TestParseMarket:
         del raw["volume"]
         market = _parse_market(raw)
         assert market.volume == 0.0
+
+
+class TestClientFetchStats:
+    def test_get_all_active_markets_with_stats(self) -> None:
+        payload = [
+            {
+                "condition_id": "c1",
+                "question": "Q1",
+                "outcomes": '["YES", "NO"]',
+                "outcomePrices": "[0.6, 0.4]",
+                "active": True,
+                "closed": False,
+                "volume": 100,
+            },
+            {
+                "condition_id": "c2",
+                "question": "Q2",
+                "outcomes": '["YES", "NO"]',
+                "outcomePrices": "[0.2, 0.8]",
+                "active": False,
+                "closed": True,
+                "volume": 50,
+            },
+        ]
+
+        client = PolymarketClient()
+
+        async def fake_get(base_url: str, path: str, params: dict | None = None) -> list[dict]:
+            return payload
+
+        client._get = fake_get  # type: ignore[method-assign]
+
+        markets, stats = asyncio.run(client.get_all_active_markets_with_stats(max_pages=1))
+        assert len(markets) == 1
+        assert markets[0].condition_id == "c1"
+        assert stats.raw_markets_seen == 2
+        assert stats.parsed_markets == 2
+        assert stats.active_markets == 1
+        assert stats.filtered_inactive == 1

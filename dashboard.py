@@ -6,7 +6,7 @@ Built with Streamlit + Plotly
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone
 import sqlite3
 from pathlib import Path
 
@@ -63,6 +63,27 @@ def load_market_snapshots():
     conn.close()
     df['recorded_at'] = pd.to_datetime(df['recorded_at'], format='mixed', utc=True)
     return df
+
+
+def build_data_health(trades_df: pd.DataFrame, snapshots_df: pd.DataFrame) -> dict[str, object]:
+    """Return lightweight data provenance metrics for dashboard trust signals."""
+    latest_snapshot_at = None
+    if not snapshots_df.empty:
+        latest_snapshot_at = snapshots_df['recorded_at'].max().to_pydatetime()
+    open_positions = int((trades_df['status'] == 'open').sum()) if not trades_df.empty else 0
+    unique_markets = int(snapshots_df['condition_id'].nunique()) if not snapshots_df.empty else 0
+    snapshot_rows = len(snapshots_df)
+    stale_minutes = None
+    if latest_snapshot_at is not None:
+        stale_minutes = (datetime.now(timezone.utc) - latest_snapshot_at).total_seconds() / 60
+
+    return {
+        'latest_snapshot_at': latest_snapshot_at,
+        'snapshot_rows': snapshot_rows,
+        'unique_markets': unique_markets,
+        'open_positions': open_positions,
+        'stale_minutes': stale_minutes,
+    }
 
 def calculate_portfolio_value_over_time(trades_df, snapshots_df, initial_cash=10000.0):
     """Calculate portfolio value over time from snapshots and trades"""
@@ -130,7 +151,7 @@ def calculate_portfolio_value_over_time(trades_df, snapshots_df, initial_cash=10
 
 def main():
     st.title("📊 Polymarket Autopilot Dashboard")
-    st.markdown("Real-time performance tracking for automated prediction market trading")
+    st.markdown("Portfolio, strategy, and data-freshness monitoring for paper trading operations")
     
     # Load data
     portfolio = load_portfolio()
@@ -138,8 +159,20 @@ def main():
     snapshots_df = load_market_snapshots()
 
     if trades_df.empty:
-        st.warning("No trade data yet. Run `polymarket-autopilot init` and `polymarket-autopilot trade --dry-run` first.")
+        st.warning("No trade data found yet. Run `polymarket-autopilot init` and then `polymarket-autopilot trade --dry-run` to generate first-cycle signals.")
         return
+
+    health = build_data_health(trades_df, snapshots_df)
+    if health['stale_minutes'] is not None and health['stale_minutes'] > 120:
+        st.warning(
+            f"Market snapshot data appears stale ({health['stale_minutes']:.0f} minutes old). "
+            "Run a fresh scan/trade cycle before interpreting current unrealized P&L."
+        )
+    elif health['latest_snapshot_at'] is not None:
+        st.caption(
+            f"Data provenance — snapshots: {health['snapshot_rows']:,} rows across "
+            f"{health['unique_markets']} markets, latest at {health['latest_snapshot_at'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
 
     strategy_filter = st.multiselect(
         "Strategy Filter",
@@ -293,8 +326,9 @@ def main():
             )
             
             st.plotly_chart(fig_strategy, use_container_width=True)
+            st.dataframe(strategy_stats.sort_values('Total P&L', ascending=False), use_container_width=True)
         else:
-            st.info("No closed trades yet")
+            st.info("No closed trades yet; strategy-level realized performance will appear once exits occur.")
     
     with col2:
         st.subheader("🎯 Win Rate by Strategy")
@@ -332,7 +366,7 @@ def main():
             
             st.plotly_chart(fig_winrate, use_container_width=True)
         else:
-            st.info("No closed trades yet")
+            st.info("No closed trades yet; win rates require completed positions.")
     
     st.markdown("---")
     
@@ -382,7 +416,7 @@ def main():
         
         st.dataframe(display_df, use_container_width=True, height=400)
     else:
-        st.info("No open positions")
+        st.info("No open positions currently. When trades are opened, live mark-to-market columns appear here.")
     
     st.markdown("---")
     
@@ -410,7 +444,7 @@ def main():
         
         st.dataframe(display_df, use_container_width=True, height=400)
     else:
-        st.info("No closed trades yet")
+        st.info("No closed trades yet; this table will populate after TP/SL/manual exits.")
     
     # Footer
     st.markdown("---")

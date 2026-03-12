@@ -93,6 +93,13 @@ class TestBacktester:
         assert "BACKTEST REPORT" in output
         assert "TAIL" in output
 
+
+    def test_run_with_overrides_applies_parameters(self, db: Database) -> None:
+        _seed_snapshots(db, yes_prices=[0.12, 0.13, 0.14, 0.15, 0.16], volume=200_000.0)
+        bt = Backtester(db, strategy_name="TAIL")
+        result = bt.run_with_overrides(days=7, overrides={"max_yes_prob": 0.18})
+        assert isinstance(result, BacktestResult)
+
     def test_multiple_markets(self, db: Database) -> None:
         for cid in ["market-A", "market-B", "market-C"]:
             _seed_snapshots(

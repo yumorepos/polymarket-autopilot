@@ -95,6 +95,19 @@ class Market:
         return self.outcomes[1].price if len(self.outcomes) > 1 else None
 
 
+@dataclass
+class MarketFetchStats:
+    """Diagnostics about a paginated market fetch."""
+
+    fetched_at: datetime
+    pages_requested: int
+    pages_fetched: int
+    raw_markets_seen: int
+    parsed_markets: int
+    active_markets: int
+    filtered_inactive: int
+
+
 # ---------------------------------------------------------------------------
 # API client
 # ---------------------------------------------------------------------------
@@ -229,6 +242,58 @@ class PolymarketClient:
             if cursor is None:
                 break
         return all_markets
+
+    async def get_all_active_markets_with_stats(
+        self, max_pages: int = 10
+    ) -> tuple[list[Market], MarketFetchStats]:
+        """Fetch active markets plus provenance diagnostics for operators."""
+        all_markets: list[Market] = []
+        cursor: str | None = None
+        pages_fetched = 0
+        raw_seen = 0
+        parsed = 0
+        filtered = 0
+
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"limit": 100, "active": "true", "closed": "false"}
+            if cursor:
+                params["offset"] = cursor
+
+            data = await self._get(GAMMA_BASE_URL, "/markets", params=params)
+            raw_markets: list[dict[str, Any]] = data if isinstance(data, list) else data.get("data", [])
+
+            pages_fetched += 1
+            raw_seen += len(raw_markets)
+
+            page_markets: list[Market] = []
+            for raw in raw_markets:
+                market = _parse_market(raw)
+                parsed += 1
+                if market.closed or not market.active:
+                    filtered += 1
+                    continue
+                page_markets.append(market)
+
+            all_markets.extend(page_markets)
+
+            if len(raw_markets) >= 100:
+                current_offset = int(cursor) if cursor else 0
+                cursor = str(current_offset + 100)
+            else:
+                cursor = None
+            if cursor is None:
+                break
+
+        stats = MarketFetchStats(
+            fetched_at=datetime.now(timezone.utc),
+            pages_requested=max_pages,
+            pages_fetched=pages_fetched,
+            raw_markets_seen=raw_seen,
+            parsed_markets=parsed,
+            active_markets=len(all_markets),
+            filtered_inactive=filtered,
+        )
+        return all_markets, stats
 
     async def get_market(self, condition_id: str) -> Market | None:
         """Fetch a single market by condition ID.
