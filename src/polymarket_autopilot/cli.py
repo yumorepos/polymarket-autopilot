@@ -18,7 +18,6 @@ from pathlib import Path
 
 import click
 
-from dotenv import load_dotenv
 from polymarket_autopilot.api import PolymarketAPIError, PolymarketClient
 from polymarket_autopilot.backtest import (
     Backtester,
@@ -39,7 +38,18 @@ from polymarket_autopilot.strategies import (
     signal_to_trade,
 )
 
-load_dotenv()
+
+def _load_env() -> None:
+    try:
+        dotenv_module = __import__("dotenv", fromlist=["load_dotenv"])
+        load_dotenv = dotenv_module.load_dotenv
+    except ModuleNotFoundError:  # pragma: no cover - fallback for restricted envs
+        from polymarket_autopilot.dotenv_compat import load_dotenv
+
+    load_dotenv()
+
+
+_load_env()
 
 # ---------------------------------------------------------------------------
 # Shared context

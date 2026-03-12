@@ -7,13 +7,17 @@ market data used by the strategy engine.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
+try:
+    httpx = importlib.import_module("httpx")
+except ModuleNotFoundError:  # pragma: no cover - fallback for restricted envs
+    from polymarket_autopilot import httpx_compat as httpx
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +125,7 @@ class PolymarketClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_retry_delay = base_retry_delay
-        self._client: httpx.AsyncClient | None = None
+        self._client: Any | None = None
 
     async def __aenter__(self) -> PolymarketClient:
         self._client = httpx.AsyncClient(timeout=self.timeout)
@@ -148,7 +152,6 @@ class PolymarketClient:
             Parsed JSON response.
 
         Raises:
-            httpx.HTTPStatusError: On non-2xx response after retries.
             RuntimeError: If the client is not initialised.
         """
         if self._client is None:
