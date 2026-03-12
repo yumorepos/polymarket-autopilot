@@ -157,6 +157,8 @@ class _BacktestPortfolio:
 
     def open_position(self, signal: TradeSignal) -> BacktestTrade:
         """Open a position from a trade signal."""
+        snapshots = self._snapshots.get(signal.condition_id, [])
+        opened_at = snapshots[-1].recorded_at if snapshots else datetime.now(timezone.utc)
         cost = signal.shares * signal.entry_price
         self.cash -= cost
         trade = BacktestTrade(
@@ -166,7 +168,7 @@ class _BacktestPortfolio:
             strategy=signal.strategy,
             entry_price=signal.entry_price,
             shares=signal.shares,
-            opened_at=datetime.now(timezone.utc),
+            opened_at=opened_at,
         )
         self._open_trades[signal.condition_id] = trade
         return trade
@@ -181,7 +183,8 @@ class _BacktestPortfolio:
         trade.exit_price = exit_price
         trade.pnl = (exit_price - trade.entry_price) * trade.shares
         trade.status = status
-        trade.closed_at = datetime.now(timezone.utc)
+        snapshots = self._snapshots.get(condition_id, [])
+        trade.closed_at = snapshots[-1].recorded_at if snapshots else datetime.now(timezone.utc)
         self.cash += trade.shares * exit_price
         return trade
 

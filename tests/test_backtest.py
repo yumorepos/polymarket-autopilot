@@ -10,9 +10,11 @@ import pytest
 from polymarket_autopilot.backtest import (
     Backtester,
     BacktestResult,
+    _BacktestPortfolio,
     format_backtest_result,
 )
 from polymarket_autopilot.db import Database, MarketSnapshot
+from polymarket_autopilot.strategies import TradeSignal
 
 
 @pytest.fixture()
@@ -92,6 +94,53 @@ class TestBacktester:
         output = format_backtest_result(result)
         assert "BACKTEST REPORT" in output
         assert "TAIL" in output
+
+
+
+    def test_trade_duration_uses_snapshot_timestamps(self, db: Database) -> None:
+        portfolio = _BacktestPortfolio(10_000.0)
+        t0 = datetime.utcnow() - timedelta(hours=3)
+        t1 = t0 + timedelta(hours=2)
+
+        portfolio.record_snapshot(
+            MarketSnapshot(
+                id=None,
+                condition_id="market-duration",
+                yes_price=0.65,
+                no_price=0.35,
+                volume=500_000.0,
+                recorded_at=t0,
+            )
+        )
+        trade = portfolio.open_position(
+            TradeSignal(
+                condition_id="market-duration",
+                question="Q",
+                outcome="Yes",
+                entry_price=0.65,
+                shares=10.0,
+                take_profit=0.75,
+                stop_loss=0.55,
+                strategy="TAIL",
+                reason="test",
+            )
+        )
+
+        portfolio.record_snapshot(
+            MarketSnapshot(
+                id=None,
+                condition_id="market-duration",
+                yes_price=0.70,
+                no_price=0.30,
+                volume=500_000.0,
+                recorded_at=t1,
+            )
+        )
+        closed = portfolio.close_position("market-duration", exit_price=0.70, status="closed_tp")
+
+        assert trade.opened_at == t0
+        assert closed is not None
+        assert closed.closed_at == t1
 
     def test_multiple_markets(self, db: Database) -> None:
         for cid in ["market-A", "market-B", "market-C"]:
