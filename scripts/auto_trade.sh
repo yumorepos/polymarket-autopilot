@@ -12,6 +12,7 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_FILE="${LOG_DIR}/trade_${RUN_ID}.log"
 MAX_PAGES="${AUTOPILOT_MAX_PAGES:-5}"
 STRATEGY="${AUTOPILOT_STRATEGY:-all}"
+LOCK_TTL_SECONDS="${AUTOPILOT_LOCK_TTL_SECONDS:-3600}"
 
 mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
 
@@ -22,8 +23,13 @@ fi
 
 if [[ -e "${LOCK_FILE}" ]]; then
   lock_age=$(( $(date +%s) - $(stat -c %Y "${LOCK_FILE}") ))
-  echo "[WARN] Existing lock detected (${lock_age}s old). Skipping duplicate run." >> "${LOG_FILE}"
-  exit 0
+  if (( lock_age >= LOCK_TTL_SECONDS )); then
+    echo "[WARN] Existing lock detected (${lock_age}s old), exceeding TTL (${LOCK_TTL_SECONDS}s). Removing stale lock." >> "${LOG_FILE}"
+    rm -f "${LOCK_FILE}"
+  else
+    echo "[WARN] Existing lock detected (${lock_age}s old). Skipping duplicate run." >> "${LOG_FILE}"
+    exit 0
+  fi
 fi
 
 cleanup() {
