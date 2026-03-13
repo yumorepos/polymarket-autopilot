@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,7 +14,10 @@ import streamlit as st
 
 CLOSED_STATUSES = ["closed_tp", "closed_sl", "closed_manual"]
 DB_PATH = Path(__file__).parent / "data" / "autopilot.db"
+DEMO_TRADES_PATH = Path(__file__).parent / "demo" / "sample_trades.json"
+DEMO_SNAPSHOTS_PATH = Path(__file__).parent / "demo" / "sample_snapshots.csv"
 INITIAL_CAPITAL = 10_000.0
+USE_DEMO_MODE = not DB_PATH.exists()
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,25 @@ def load_portfolio(path: Path = DB_PATH) -> pd.Series:
 @st.cache_data(ttl=60)
 def load_trades(path: Path = DB_PATH) -> pd.DataFrame:
     """Load all paper trades."""
+    if USE_DEMO_MODE and DEMO_TRADES_PATH.exists():
+        # Load from demo JSON
+        with open(DEMO_TRADES_PATH, "r") as f:
+            trades_data = json.load(f)
+        
+        df = pd.DataFrame(trades_data)
+        if df.empty:
+            return df
+        
+        # Calculate P&L for demo trades
+        df["pnl"] = 0.0
+        for idx, row in df.iterrows():
+            if row["status"] in CLOSED_STATUSES:
+                df.at[idx, "pnl"] = (row["exit_price"] - row["entry_price"]) * row["shares"]
+        
+        df["opened_at"] = pd.to_datetime(df["opened_at"], format="mixed", utc=True)
+        df["closed_at"] = pd.to_datetime(df["closed_at"], format="mixed", utc=True, errors='coerce')
+        return df
+    
     if not path.exists():
         return pd.DataFrame()
 
@@ -69,6 +92,14 @@ def load_trades(path: Path = DB_PATH) -> pd.DataFrame:
 @st.cache_data(ttl=60)
 def load_market_snapshots(path: Path = DB_PATH) -> pd.DataFrame:
     """Load market snapshots used for mark-to-market calculations."""
+    if USE_DEMO_MODE and DEMO_SNAPSHOTS_PATH.exists():
+        # Load from demo CSV
+        df = pd.read_csv(DEMO_SNAPSHOTS_PATH)
+        if df.empty:
+            return df
+        df["recorded_at"] = pd.to_datetime(df["recorded_at"], format="mixed", utc=True)
+        return df
+    
     if not path.exists():
         return pd.DataFrame()
 
@@ -415,6 +446,10 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     st.title("📊 Polymarket Autopilot Dashboard")
+    
+    if USE_DEMO_MODE:
+        st.info("🎬 **Demo Mode** — Displaying sample trading data for portfolio demonstration")
+    
     st.markdown(
         "Paper-trading performance tracking for strategy research and portfolio risk review"
     )
