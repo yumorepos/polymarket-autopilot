@@ -1212,6 +1212,19 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "CONTRARIAN": ContrarianStrategy,
 }
 
+# Import optimized strategy variants (experimental)
+try:
+    from polymarket_autopilot.strategies_optimized import (
+        TailWideStopLossStrategy,
+        MeanReversionV2Strategy,
+        CatalystHunterStrategy,
+    )
+    STRATEGIES["TAIL_WIDE_SL"] = TailWideStopLossStrategy
+    STRATEGIES["MEAN_REVERSION_V2"] = MeanReversionV2Strategy
+    STRATEGIES["CATALYST_HUNTER"] = CatalystHunterStrategy
+except ImportError:
+    pass  # Optimized strategies not available
+
 
 def get_strategy(name: str, db: StrategyDB, **kwargs: float | int) -> Strategy:
     """Instantiate a strategy by name.
@@ -1315,6 +1328,10 @@ STRATEGY_METADATA: dict[str, StrategyMetadata] = {
     "SIMPLE_MEAN_REVERSAL": StrategyMetadata(
         "SIMPLE_MEAN_REVERSAL", "low", "template", "placeholder"
     ),
+    # Optimized variants
+    "TAIL_WIDE_SL": StrategyMetadata("TAIL_WIDE_SL", "medium", "swing", "long-shot-wide-sl"),
+    "MEAN_REVERSION_V2": StrategyMetadata("MEAN_REVERSION_V2", "medium", "swing", "mean-rev-filtered"),
+    "CATALYST_HUNTER": StrategyMetadata("CATALYST_HUNTER", "low-med", "short", "post-catalyst"),
 }
 
 
