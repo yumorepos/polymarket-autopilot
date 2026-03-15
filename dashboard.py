@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,9 @@ DEMO_TRADES_PATH = Path(__file__).parent / "demo" / "sample_trades.json"
 DEMO_SNAPSHOTS_PATH = Path(__file__).parent / "demo" / "sample_snapshots.csv"
 INITIAL_CAPITAL = 10_000.0
 USE_DEMO_MODE = not DB_PATH.exists()
+
+# Live trading toggle (for future use)
+LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
 
 @dataclass(frozen=True)
@@ -447,8 +451,13 @@ def main() -> None:
     )
     st.title("📊 Polymarket Autopilot Dashboard")
     
-    if USE_DEMO_MODE:
+    # Trading mode indicator
+    if LIVE_TRADING_ENABLED:
+        st.warning("🔴 **LIVE TRADING ENABLED** — Real money at risk")
+    elif USE_DEMO_MODE:
         st.info("🎬 **Demo Mode** — Displaying sample trading data for portfolio demonstration")
+    else:
+        st.info("📄 **Paper Trading Mode** — No real money at risk")
     
     st.markdown(
         "Paper-trading performance tracking for strategy research and portfolio risk review"
