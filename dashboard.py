@@ -61,7 +61,7 @@ def load_trades(path: Path = DB_PATH) -> pd.DataFrame:
     """Load all paper trades."""
     if USE_DEMO_MODE and DEMO_TRADES_PATH.exists():
         # Load from demo JSON
-        with open(DEMO_TRADES_PATH, "r") as f:
+        with open(DEMO_TRADES_PATH) as f:
             trades_data = json.load(f)
         
         df = pd.DataFrame(trades_data)

@@ -13,11 +13,16 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from typing import Any
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
+from py_clob_client.clob_types import (  # type: ignore[import-untyped]
+    MarketOrderArgs,
+    OpenOrderParams,
+    OrderArgs,
+    OrderType,
+)
+from py_clob_client.order_builder.constants import BUY, SELL  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +87,7 @@ class LiveTradingClient:
         private_key: str | None = None,
         funder_address: str | None = None,
         risk_limits: RiskLimits | None = None,
-    ):
+    ) -> None:
         self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY")
         self.funder_address = funder_address or os.getenv("POLYMARKET_FUNDER_ADDRESS")
         self.risk_limits = risk_limits or RiskLimits.from_env()
@@ -108,12 +113,12 @@ class LiveTradingClient:
 
         # Initialize py-clob-client
         if self.enabled and self.private_key:
-            self.client = ClobClient(
+            self.client: ClobClient = ClobClient(
                 self.host,
                 key=self.private_key,
                 chain_id=self.chain_id,
                 signature_type=self.signature_type,
-                funder=self.funder_address or "",  # Empty string if not using proxy
+                funder=self.funder_address or "",
             )
             # Create/derive API credentials (required for authenticated endpoints)
             self.client.set_api_creds(self.client.create_or_derive_api_creds())
@@ -152,15 +157,19 @@ class LiveTradingClient:
                 f"{self.risk_limits.max_open_positions}"
             )
 
-        logger.info(f"Risk check passed: order_size={order_size:.2f}, daily_pnl={daily_pnl:.2f}")
+        logger.info(
+            "Risk check passed: order_size=%.2f, daily_pnl=%.2f",
+            order_size,
+            daily_pnl,
+        )
 
     def place_limit_order(
         self,
         token_id: str,
-        side: str,  # "YES" or "NO"
-        size: float,  # USD amount
-        price: float,  # limit price in [0, 1]
-    ) -> dict:
+        side: str,
+        size: float,
+        price: float,
+    ) -> dict[str, Any]:
         """Place a limit order on Polymarket.
 
         Args:
@@ -181,10 +190,8 @@ class LiveTradingClient:
                 "Set LIVE_TRADING_ENABLED=true to enable real orders."
             )
 
-        # Convert YES/NO to BUY/SELL
         order_side = BUY if side.upper() == "YES" else SELL
 
-        # Build order
         order = OrderArgs(
             token_id=token_id,
             price=price,
@@ -193,22 +200,20 @@ class LiveTradingClient:
         )
 
         try:
-            # Sign order
             signed_order = self.client.create_order(order)
-            # Submit order (GTC = Good-Til-Cancelled)
-            response = self.client.post_order(signed_order, OrderType.GTC)
-            logger.info(f"Limit order placed: {response}")
+            response: dict[str, Any] = self.client.post_order(signed_order, OrderType.GTC)
+            logger.info("Limit order placed: %s", response)
             return response
         except Exception as e:
-            logger.error(f"Order placement failed: {e}")
+            logger.error("Order placement failed: %s", e)
             raise LiveTradingError(f"Failed to place order: {e}") from e
 
     def place_market_order(
         self,
         token_id: str,
-        side: str,  # "YES" or "NO"
-        amount: float,  # USD amount
-    ) -> dict:
+        side: str,
+        amount: float,
+    ) -> dict[str, Any]:
         """Place a market order on Polymarket (Fill-Or-Kill).
 
         Args:
@@ -227,10 +232,8 @@ class LiveTradingClient:
                 "Live trading is DISABLED. Set LIVE_TRADING_ENABLED=true to enable."
             )
 
-        # Convert YES/NO to BUY/SELL
         order_side = BUY if side.upper() == "YES" else SELL
 
-        # Build market order (FOK = Fill-Or-Kill)
         market_order = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
@@ -240,14 +243,16 @@ class LiveTradingClient:
 
         try:
             signed_order = self.client.create_market_order(market_order)
-            response = self.client.post_order(signed_order, OrderType.FOK)
-            logger.info(f"Market order placed: {response}")
+            response: dict[str, Any] = self.client.post_order(
+                signed_order, OrderType.FOK
+            )
+            logger.info("Market order placed: %s", response)
             return response
         except Exception as e:
-            logger.error(f"Market order failed: {e}")
+            logger.error("Market order failed: %s", e)
             raise LiveTradingError(f"Failed to place market order: {e}") from e
 
-    def cancel_order(self, order_id: str) -> dict:
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Cancel an open order.
 
         Args:
@@ -260,11 +265,11 @@ class LiveTradingClient:
             raise LiveTradingError("Live trading is not enabled.")
 
         try:
-            response = self.client.cancel(order_id)
-            logger.info(f"Order cancelled: {response}")
+            response: dict[str, Any] = self.client.cancel(order_id)
+            logger.info("Order cancelled: %s", response)
             return response
         except Exception as e:
-            logger.error(f"Order cancellation failed: {e}")
+            logger.error("Order cancellation failed: %s", e)
             raise LiveTradingError(f"Failed to cancel order: {e}") from e
 
     def cancel_all_orders(self) -> None:
@@ -276,19 +281,19 @@ class LiveTradingClient:
             self.client.cancel_all()
             logger.info("All orders cancelled")
         except Exception as e:
-            logger.error(f"Cancel all failed: {e}")
+            logger.error("Cancel all failed: %s", e)
             raise LiveTradingError(f"Failed to cancel all orders: {e}") from e
 
-    def get_open_orders(self) -> list[dict]:
+    def get_open_orders(self) -> list[dict[str, Any]]:
         """Fetch all open orders for the authenticated wallet."""
         if not self.enabled:
             return []
 
         try:
-            orders = self.client.get_orders(OpenOrderParams())
+            orders: list[dict[str, Any]] = self.client.get_orders(OpenOrderParams())
             return orders
         except Exception as e:
-            logger.error(f"Failed to fetch open orders: {e}")
+            logger.error("Failed to fetch open orders: %s", e)
             return []
 
     def get_midpoint(self, token_id: str) -> float | None:
@@ -301,12 +306,13 @@ class LiveTradingClient:
             Midpoint price, or None if unavailable
         """
         try:
-            return self.client.get_midpoint(token_id)
+            result: float = self.client.get_midpoint(token_id)
+            return result
         except Exception as e:
-            logger.error(f"Failed to get midpoint for {token_id}: {e}")
+            logger.error("Failed to get midpoint for %s: %s", token_id, e)
             return None
 
-    def get_order_book(self, token_id: str) -> dict | None:
+    def get_order_book(self, token_id: str) -> dict[str, Any] | None:
         """Fetch the order book for a token.
 
         Args:
@@ -316,9 +322,10 @@ class LiveTradingClient:
             Order book dict with bids/asks, or None if unavailable
         """
         try:
-            return self.client.get_order_book(token_id)
+            result: dict[str, Any] = self.client.get_order_book(token_id)
+            return result
         except Exception as e:
-            logger.error(f"Failed to get order book for {token_id}: {e}")
+            logger.error("Failed to get order book for %s: %s", token_id, e)
             return None
 
 
@@ -344,12 +351,12 @@ def emergency_stop() -> None:
 
     try:
         open_orders = client.get_open_orders()
-        logger.info(f"Found {len(open_orders)} open orders")
+        logger.info("Found %d open orders", len(open_orders))
 
         client.cancel_all_orders()
-        logger.info(f"Emergency stop complete: cancelled {len(open_orders)} orders")
+        logger.info("Emergency stop complete: cancelled %d orders", len(open_orders))
     except Exception as e:
-        logger.error(f"Emergency stop failed: {e}")
+        logger.error("Emergency stop failed: %s", e)
 
 
 def get_daily_pnl(db_path: str = "data/autopilot.db") -> float:
@@ -379,7 +386,7 @@ def get_daily_pnl(db_path: str = "data/autopilot.db") -> float:
         result = cursor.fetchone()
         conn.close()
 
-        return result[0] if result and result[0] is not None else 0.0
+        return float(result[0]) if result and result[0] is not None else 0.0
     except Exception as e:
-        logger.error(f"Failed to calculate daily P&L: {e}")
+        logger.error("Failed to calculate daily P&L: %s", e)
         return 0.0

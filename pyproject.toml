@@ -25,6 +25,7 @@ dependencies = [
     "pandas>=2.2.0",
     "plotly>=5.20.0",
     "streamlit>=1.33.0",
+    "py-clob-client>=0.34.0",
 ]
 
 [project.optional-dependencies]

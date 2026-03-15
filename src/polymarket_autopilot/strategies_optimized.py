@@ -17,10 +17,10 @@ Optimizations:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from polymarket_autopilot.api import Market
-from polymarket_autopilot.db import Database, MarketSnapshot
+from polymarket_autopilot.db import Database
 from polymarket_autopilot.strategies import (
     Strategy,
     TradeSignal,
