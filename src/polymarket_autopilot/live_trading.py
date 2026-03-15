@@ -1,4 +1,4 @@
-"""Live trading execution module for Polymarket.
+"""Live trading execution module for Polymarket using py-clob-client.
 
 This module provides authenticated order placement and position management
 for real-money trading. It is intentionally separate from paper trading
@@ -14,12 +14,10 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
-try:
-    import httpx
-except ImportError:
-    from polymarket_autopilot import httpx_compat as httpx
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType
+from py_clob_client.order_builder.constants import BUY, SELL
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +70,8 @@ class LiveTradingClient:
     """Authenticated client for placing real orders on Polymarket.
 
     This client requires:
-    - POLYMARKET_API_KEY (your API key)
-    - POLYMARKET_API_SECRET (your API secret)
-    - POLYMARKET_WALLET_ADDRESS (your wallet address)
+    - POLYMARKET_PRIVATE_KEY (your wallet private key, 0x...)
+    - POLYMARKET_FUNDER_ADDRESS (optional, for proxy/email wallets)
     - LIVE_TRADING_ENABLED=true (explicit opt-in)
 
     All orders are subject to RiskLimits validation before placement.
@@ -82,14 +79,12 @@ class LiveTradingClient:
 
     def __init__(
         self,
-        api_key: str | None = None,
-        api_secret: str | None = None,
-        wallet_address: str | None = None,
+        private_key: str | None = None,
+        funder_address: str | None = None,
         risk_limits: RiskLimits | None = None,
     ):
-        self.api_key = api_key or os.getenv("POLYMARKET_API_KEY")
-        self.api_secret = api_secret or os.getenv("POLYMARKET_API_SECRET")
-        self.wallet_address = wallet_address or os.getenv("POLYMARKET_WALLET_ADDRESS")
+        self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY")
+        self.funder_address = funder_address or os.getenv("POLYMARKET_FUNDER_ADDRESS")
         self.risk_limits = risk_limits or RiskLimits.from_env()
 
         # Safety: require explicit opt-in
@@ -100,14 +95,30 @@ class LiveTradingClient:
                 "Live trading is DISABLED. Set LIVE_TRADING_ENABLED=true to enable."
             )
 
-        if self.enabled and not all([self.api_key, self.api_secret, self.wallet_address]):
+        if self.enabled and not self.private_key:
             raise LiveTradingError(
-                "Live trading requires POLYMARKET_API_KEY, POLYMARKET_API_SECRET, "
-                "and POLYMARKET_WALLET_ADDRESS environment variables."
+                "Live trading requires POLYMARKET_PRIVATE_KEY environment variable."
             )
 
-        self.base_url = "https://clob.polymarket.com"
-        self.client = httpx.Client(timeout=30.0)
+        self.host = "https://clob.polymarket.com"
+        self.chain_id = 137  # Polygon mainnet
+
+        # Signature type: 0 for EOA (MetaMask, hardware wallet), 1 for email/Magic wallet
+        self.signature_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))
+
+        # Initialize py-clob-client
+        if self.enabled and self.private_key:
+            self.client = ClobClient(
+                self.host,
+                key=self.private_key,
+                chain_id=self.chain_id,
+                signature_type=self.signature_type,
+                funder=self.funder_address or "",  # Empty string if not using proxy
+            )
+            # Create/derive API credentials (required for authenticated endpoints)
+            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+        else:
+            self.client = ClobClient(self.host)  # Read-only client
 
     def check_risk_limits(
         self, order_size: float, current_positions: int, daily_pnl: float
@@ -143,28 +154,25 @@ class LiveTradingClient:
 
         logger.info(f"Risk check passed: order_size={order_size:.2f}, daily_pnl={daily_pnl:.2f}")
 
-    def place_order(
+    def place_limit_order(
         self,
         token_id: str,
-        side: str,  # "BUY" or "SELL"
+        side: str,  # "YES" or "NO"
         size: float,  # USD amount
         price: float,  # limit price in [0, 1]
-        market_liquidity: float = 0.0,
-    ) -> dict[str, Any]:
+    ) -> dict:
         """Place a limit order on Polymarket.
 
         Args:
             token_id: The outcome token ID
-            side: "BUY" or "SELL"
+            side: "YES" or "NO"
             size: Order size in USD
             price: Limit price (probability between 0 and 1)
-            market_liquidity: Current market liquidity in USD (for risk check)
 
         Returns:
-            Order confirmation dict with order_id, fill_price, etc.
+            Order confirmation dict with order_id, status, etc.
 
         Raises:
-            RiskLimitExceeded: If order violates risk limits
             LiveTradingError: If order placement fails
         """
         if not self.enabled:
@@ -173,55 +181,73 @@ class LiveTradingClient:
                 "Set LIVE_TRADING_ENABLED=true to enable real orders."
             )
 
-        # Liquidity check
-        if market_liquidity < self.risk_limits.min_market_liquidity:
-            raise RiskLimitExceeded(
-                f"Market liquidity {market_liquidity:.2f} below minimum "
-                f"{self.risk_limits.min_market_liquidity:.2f}"
-            )
+        # Convert YES/NO to BUY/SELL
+        order_side = BUY if side.upper() == "YES" else SELL
 
-        # Build order payload (Polymarket CLOB API format)
-        order_payload = {
-            "token_id": token_id,
-            "side": side.upper(),
-            "size": str(size),
-            "price": str(price),
-            "wallet": self.wallet_address,
-            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-        }
+        # Build order
+        order = OrderArgs(
+            token_id=token_id,
+            price=price,
+            size=size,
+            side=order_side,
+        )
 
-        # Sign the order (placeholder - requires ECDSA signature)
-        # Real implementation would use eth_account or web3.py to sign
-        signature = self._sign_order(order_payload)
-        order_payload["signature"] = signature
-
-        # Submit order
         try:
-            response = self.client.post(
-                f"{self.base_url}/orders",
-                json=order_payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            order_result = response.json()
-            logger.info(f"Order placed: {order_result}")
-            return order_result
+            # Sign order
+            signed_order = self.client.create_order(order)
+            # Submit order (GTC = Good-Til-Cancelled)
+            response = self.client.post_order(signed_order, OrderType.GTC)
+            logger.info(f"Limit order placed: {response}")
+            return response
         except Exception as e:
             logger.error(f"Order placement failed: {e}")
             raise LiveTradingError(f"Failed to place order: {e}") from e
 
-    def _sign_order(self, order_payload: dict[str, Any]) -> str:
-        """Sign an order payload with the wallet private key.
+    def place_market_order(
+        self,
+        token_id: str,
+        side: str,  # "YES" or "NO"
+        amount: float,  # USD amount
+    ) -> dict:
+        """Place a market order on Polymarket (Fill-Or-Kill).
 
-        TODO: Implement ECDSA signature using eth_account.
-        This is a placeholder that will raise an error if called.
+        Args:
+            token_id: The outcome token ID
+            side: "YES" or "NO"
+            amount: Order amount in USD
+
+        Returns:
+            Order confirmation dict with fill info
+
+        Raises:
+            LiveTradingError: If order placement fails
         """
-        raise NotImplementedError(
-            "Order signing not yet implemented. "
-            "Requires eth_account or web3.py integration."
+        if not self.enabled:
+            raise LiveTradingError(
+                "Live trading is DISABLED. Set LIVE_TRADING_ENABLED=true to enable."
+            )
+
+        # Convert YES/NO to BUY/SELL
+        order_side = BUY if side.upper() == "YES" else SELL
+
+        # Build market order (FOK = Fill-Or-Kill)
+        market_order = MarketOrderArgs(
+            token_id=token_id,
+            amount=amount,
+            side=order_side,
+            order_type=OrderType.FOK,
         )
 
-    def cancel_order(self, order_id: str) -> dict[str, Any]:
+        try:
+            signed_order = self.client.create_market_order(market_order)
+            response = self.client.post_order(signed_order, OrderType.FOK)
+            logger.info(f"Market order placed: {response}")
+            return response
+        except Exception as e:
+            logger.error(f"Market order failed: {e}")
+            raise LiveTradingError(f"Failed to place market order: {e}") from e
+
+    def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order.
 
         Args:
@@ -234,38 +260,66 @@ class LiveTradingClient:
             raise LiveTradingError("Live trading is not enabled.")
 
         try:
-            response = self.client.delete(
-                f"{self.base_url}/orders/{order_id}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            result = response.json()
-            logger.info(f"Order cancelled: {result}")
-            return result
+            response = self.client.cancel(order_id)
+            logger.info(f"Order cancelled: {response}")
+            return response
         except Exception as e:
             logger.error(f"Order cancellation failed: {e}")
             raise LiveTradingError(f"Failed to cancel order: {e}") from e
 
-    def get_open_orders(self) -> list[dict[str, Any]]:
+    def cancel_all_orders(self) -> None:
+        """Cancel all open orders."""
+        if not self.enabled:
+            raise LiveTradingError("Live trading is not enabled.")
+
+        try:
+            self.client.cancel_all()
+            logger.info("All orders cancelled")
+        except Exception as e:
+            logger.error(f"Cancel all failed: {e}")
+            raise LiveTradingError(f"Failed to cancel all orders: {e}") from e
+
+    def get_open_orders(self) -> list[dict]:
         """Fetch all open orders for the authenticated wallet."""
         if not self.enabled:
             return []
 
         try:
-            response = self.client.get(
-                f"{self.base_url}/orders",
-                params={"wallet": self.wallet_address},
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            return response.json()
+            orders = self.client.get_orders(OpenOrderParams())
+            return orders
         except Exception as e:
             logger.error(f"Failed to fetch open orders: {e}")
             return []
 
-    def close(self) -> None:
-        """Close the HTTP client."""
-        self.client.close()
+    def get_midpoint(self, token_id: str) -> float | None:
+        """Get the current midpoint price for a token.
+
+        Args:
+            token_id: The token ID
+
+        Returns:
+            Midpoint price, or None if unavailable
+        """
+        try:
+            return self.client.get_midpoint(token_id)
+        except Exception as e:
+            logger.error(f"Failed to get midpoint for {token_id}: {e}")
+            return None
+
+    def get_order_book(self, token_id: str) -> dict | None:
+        """Fetch the order book for a token.
+
+        Args:
+            token_id: The token ID
+
+        Returns:
+            Order book dict with bids/asks, or None if unavailable
+        """
+        try:
+            return self.client.get_order_book(token_id)
+        except Exception as e:
+            logger.error(f"Failed to get order book for {token_id}: {e}")
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -290,17 +344,12 @@ def emergency_stop() -> None:
 
     try:
         open_orders = client.get_open_orders()
-        for order in open_orders:
-            order_id = order.get("order_id", order.get("id"))
-            if order_id:
-                logger.info(f"Cancelling order {order_id}")
-                client.cancel_order(order_id)
+        logger.info(f"Found {len(open_orders)} open orders")
 
+        client.cancel_all_orders()
         logger.info(f"Emergency stop complete: cancelled {len(open_orders)} orders")
     except Exception as e:
         logger.error(f"Emergency stop failed: {e}")
-    finally:
-        client.close()
 
 
 def get_daily_pnl(db_path: str = "data/autopilot.db") -> float:
