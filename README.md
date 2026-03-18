@@ -113,6 +113,48 @@ api.py + demo.py  ──► strategies.py (signals, rationale)
 | `polymarket-autopilot backtest` | Single-strategy replay | focused evaluation |
 | `polymarket-autopilot compare` | Multi-strategy ranking + benchmark context | analytics/demo |
 | `polymarket-autopilot daily-report` | Markdown report output | automation/cron |
+| `polymarket-autopilot monitor-positions` | Check positions and execute stop-loss/take-profit | risk management |
+
+---
+
+## Risk Management
+
+The autopilot now includes automated stop-loss and take-profit orders to protect capital and lock in gains.
+
+### Configuration
+
+Set thresholds in `.env` or via CLI flags:
+
+```bash
+# In .env file
+AUTOPILOT_STOP_LOSS_PCT=0.10     # Trigger at -10% loss
+AUTOPILOT_TAKE_PROFIT_PCT=0.20   # Trigger at +20% profit
+
+# Or via CLI
+polymarket-autopilot monitor-positions --stop-loss 0.10 --take-profit 0.20
+```
+
+### How it works
+
+1. **Stop-loss**: Automatically exits positions when losses exceed the threshold
+   - YES positions: exits when price falls below entry × (1 - threshold)
+   - NO positions: exits when price rises above entry × (1 + threshold)
+
+2. **Take-profit**: Automatically exits positions when profits exceed the threshold
+   - YES positions: exits when price rises above entry × (1 + threshold)
+   - NO positions: exits when price falls below entry × (1 - threshold)
+
+3. **Monitoring**: Run `monitor-positions` periodically (e.g., via cron) to check all open positions
+
+### Example
+
+```bash
+# Monitor positions with default thresholds (-10% stop, +20% profit)
+polymarket-autopilot monitor-positions
+
+# Tighter risk control
+polymarket-autopilot monitor-positions --stop-loss 0.05 --take-profit 0.15
+```
 
 ---
 

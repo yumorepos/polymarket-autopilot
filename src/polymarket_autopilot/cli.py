@@ -566,3 +566,53 @@ def daily_report(ctx: click.Context) -> None:
     db = _get_db(ctx.obj["db_path"])
     report = generate_daily_report(db)
     click.echo(report)
+
+
+# ---------------------------------------------------------------------------
+# monitor-positions
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="monitor-positions")
+@click.option(
+    "--stop-loss",
+    default=0.10,
+    show_default=True,
+    type=float,
+    help="Stop-loss threshold as decimal (e.g., 0.10 for -10%)",
+)
+@click.option(
+    "--take-profit",
+    default=0.20,
+    show_default=True,
+    type=float,
+    help="Take-profit threshold as decimal (e.g., 0.20 for +20%)",
+)
+@click.pass_context
+def monitor_positions(ctx: click.Context, stop_loss: float, take_profit: float) -> None:
+    """Monitor open positions and execute stop-loss/take-profit orders."""
+    from polymarket_autopilot.risk_management import (
+        PositionMonitor,
+        RiskManagementConfig,
+    )
+    
+    db = _get_db(ctx.obj["db_path"])
+    client = PolymarketClient()
+    config = RiskManagementConfig(
+        stop_loss_pct=stop_loss,
+        take_profit_pct=take_profit,
+    )
+    
+    monitor = PositionMonitor(db, client, config)
+    
+    click.echo(f"Monitoring positions (stop-loss: -{stop_loss*100:.0f}%, take-profit: +{take_profit*100:.0f}%)")
+    
+    results = monitor.check_positions()
+    
+    click.echo(f"\nResults:")
+    click.echo(f"  Stop-loss triggered: {results['stop_loss']}")
+    click.echo(f"  Take-profit triggered: {results['take_profit']}")
+    click.echo(f"  Unchanged: {results['unchanged']}")
+    
+    if results['stop_loss'] + results['take_profit'] > 0:
+        click.echo(f"\n✅ {results['stop_loss'] + results['take_profit']} position(s) closed")
