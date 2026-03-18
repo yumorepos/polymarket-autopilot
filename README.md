@@ -2,6 +2,9 @@
 
 # Polymarket Autopilot
 
+[![CI](https://github.com/yumorepos/polymarket-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/yumorepos/polymarket-autopilot/actions/workflows/ci.yml)
+
+
 **Paper-trading research engine for prediction-market strategies**
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org)
