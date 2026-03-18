@@ -62,3 +62,6 @@ data/
 *.tar.gz
 *.whl
 logs/
+
+*.pyc
+*.log
