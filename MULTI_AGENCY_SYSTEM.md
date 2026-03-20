@@ -264,7 +264,7 @@ python3 agency-monitor.py
 
 For questions, issues, or contributions:
 - GitHub: https://github.com/yumorepos/polymarket-autopilot
-- Portfolio: https://portfolio-v2-lovat-one.vercel.app
+- Portfolio: https://yumorepos.github.io
 
 ---
 
