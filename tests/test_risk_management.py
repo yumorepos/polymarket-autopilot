@@ -108,10 +108,7 @@ class TestPositionMonitor:
         """Test stop-loss trigger for YES position."""
         mock_db.get_open_trades.return_value = [sample_trade]
         # Current price dropped 15% (0.50 -> 0.425), below -10% threshold
-        mock_client.get_market.return_value = {
-            "yes_price": 0.425,
-            "no_price": 0.575,
-        }
+        mock_client.get_market.return_value = Mock(yes_price=0.425, no_price=0.575)
         
         config = RiskManagementConfig(stop_loss_pct=0.10)
         monitor = PositionMonitor(mock_db, mock_client, config)
@@ -134,10 +131,7 @@ class TestPositionMonitor:
         """Test take-profit trigger for YES position."""
         mock_db.get_open_trades.return_value = [sample_trade]
         # Current price rose 25% (0.50 -> 0.625), above +20% threshold
-        mock_client.get_market.return_value = {
-            "yes_price": 0.625,
-            "no_price": 0.375,
-        }
+        mock_client.get_market.return_value = Mock(yes_price=0.625, no_price=0.375)
         
         config = RiskManagementConfig(take_profit_pct=0.20)
         monitor = PositionMonitor(mock_db, mock_client, config)
@@ -160,10 +154,7 @@ class TestPositionMonitor:
         """Test position within thresholds remains open."""
         mock_db.get_open_trades.return_value = [sample_trade]
         # Current price moved 5% (0.50 -> 0.525), within thresholds
-        mock_client.get_market.return_value = {
-            "yes_price": 0.525,
-            "no_price": 0.475,
-        }
+        mock_client.get_market.return_value = Mock(yes_price=0.525, no_price=0.475)
         
         config = RiskManagementConfig(stop_loss_pct=0.10, take_profit_pct=0.20)
         monitor = PositionMonitor(mock_db, mock_client, config)
@@ -236,11 +227,11 @@ class TestPositionMonitor:
         
         mock_db.get_open_trades.return_value = [trade1, trade2, trade3]
         
-        def get_market_side_effect(condition_id: str) -> dict:
+        def get_market_side_effect(condition_id: str) -> Mock:
             if condition_id == "0x1234":
-                return {"yes_price": 0.425, "no_price": 0.575}  # -15% loss
+                return Mock(yes_price=0.425, no_price=0.575)  # -15% loss
             elif condition_id == "0x5678":
-                return {"yes_price": 0.375, "no_price": 0.625}  # +25% profit
+                return Mock(yes_price=0.375, no_price=0.625)  # +25% profit
             else:
                 return {"yes_price": 0.45, "no_price": 0.41}  # +2.5% (unchanged)
         

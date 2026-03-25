@@ -15,14 +15,14 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
-from py_clob_client.clob_types import (  # type: ignore[import-untyped]
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import (
     MarketOrderArgs,
     OpenOrderParams,
     OrderArgs,
     OrderType,
 )
-from py_clob_client.order_builder.constants import BUY, SELL  # type: ignore[import-untyped]
+from py_clob_client.order_builder.constants import BUY, SELL
 
 logger = logging.getLogger(__name__)
 

@@ -6,13 +6,15 @@ stop-loss or take-profit thresholds are breached.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polymarket_autopilot.api import PolymarketClient
+    from polymarket_autopilot.api import Market, PolymarketClient
     from polymarket_autopilot.db import Database, PaperTrade
 
 logger = logging.getLogger(__name__)
@@ -132,12 +134,19 @@ class PositionMonitor:
             Action taken: "stop_loss", "take_profit", or "unchanged"
         """
         try:
-            # Fetch current market price
-            market = self.client.get_market(trade.condition_id)
+            # Fetch current market price (handles async/sync client)
+            result = self.client.get_market(trade.condition_id)
+            market: Market | None = asyncio.run(result) if inspect.iscoroutine(result) else result  # type: ignore[assignment]
+            if market is None:
+                logger.warning(f"Market not found for {trade.condition_id}")
+                return "unchanged"
             current_price = (
-                market["yes_price"] if trade.outcome.upper() == "YES"
-                else market["no_price"]
+                market.yes_price if trade.outcome.upper() == "YES"
+                else market.no_price
             )
+            if current_price is None:
+                logger.warning(f"No price for outcome {trade.outcome} in {trade.condition_id}")
+                return "unchanged"
             
             # Calculate P&L percentage
             if trade.outcome.upper() == "YES":
