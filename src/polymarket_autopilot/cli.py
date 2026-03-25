@@ -605,11 +605,13 @@ def monitor_positions(ctx: click.Context, stop_loss: float, take_profit: float) 
     
     monitor = PositionMonitor(db, client, config)
     
-    click.echo(f"Monitoring positions (stop-loss: -{stop_loss*100:.0f}%, take-profit: +{take_profit*100:.0f}%)")
+    sl = f"-{stop_loss*100:.0f}%"
+    tp = f"+{take_profit*100:.0f}%"
+    click.echo(f"Monitoring positions (stop-loss: {sl}, take-profit: {tp})")
     
     results = monitor.check_positions()
     
-    click.echo(f"\nResults:")
+    click.echo("\nResults:")
     click.echo(f"  Stop-loss triggered: {results['stop_loss']}")
     click.echo(f"  Take-profit triggered: {results['take_profit']}")
     click.echo(f"  Unchanged: {results['unchanged']}")
